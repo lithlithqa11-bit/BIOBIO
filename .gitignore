@@ -1,0 +1,35 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.pytest_cache/
+.coverage
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Git portable binaries
+tools/git/
+
+# Docking runs: keep .gitkeep, ignore all run outputs
+docking_runs/*
+!docking_runs/.gitkeep
+runs/
+
+# IDE and temporary agent folders
+.gemini/
+.agents/
+
+# Temporary and log files
+*.log
+*.tmp
+
+# Operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store\n
