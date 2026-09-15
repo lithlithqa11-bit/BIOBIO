@@ -1169,7 +1169,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.session_state["matched_comparison_result"] = comp_result
                     st.success("✅ اكتملت المقارنة بنجاح!")
                 except Exception as e:
-                    st.error(f"فشلت المقارنة: {e}")
+                    st.error(f"❌ فشلت المقارنة: {e}")
 
         comp = st.session_state.get("matched_comparison_result")
         if comp:
@@ -1187,13 +1187,13 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             except Exception:
                 pass
 
-            h_top_pose = comp["healthy"]["poses"][0].pdbqt_block if comp["healthy"].get("poses") else ""
-            m_top_pose = comp["mutant"]["poses"][0].pdbqt_block if comp["mutant"].get("poses") else ""
+            h_top_pose = comp["healthy"]["clusters"][0].representative_pose.pdbqt_block if comp["healthy"].get("clusters") else ""
+            m_top_pose = comp["mutant"]["clusters"][0].representative_pose.pdbqt_block if comp["mutant"].get("clusters") else ""
 
             h_inter = analyze_protein_ligand_interactions(h_clean_text, h_top_pose)
             m_inter = analyze_protein_ligand_interactions(m_clean_text, m_top_pose)
 
-            pocket_nums = [r.strip() for r in pocket_res.split(",") if r.strip()]
+            pocket_nums = [r.strip() for r in pocket_res.split(",") if r.strip()] if pocket_res else []
             comp_inter = compare_interactions(h_inter, m_inter, mutation_residue_nums=pocket_nums)
             resistance_info = interpret_resistance_risk(
                 delta_score=comp["delta_score"],
