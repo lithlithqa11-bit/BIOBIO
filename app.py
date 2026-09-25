@@ -9,7 +9,6 @@ A comprehensive computational platform for:
 import streamlit as st
 from analysis.ui import render_analysis_tab, initialize_session_state
 from docking.ui import render_docking_tab
-#ليث 
 
 def main():
     st.set_page_config(

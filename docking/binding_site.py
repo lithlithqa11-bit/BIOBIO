@@ -52,17 +52,30 @@ def extract_reference_ligand(
 
     chosen_key = None
     if chain_id is not None or resseq is not None:
+        matching = []
         for k in instances:
-            ch_match = (chain_id is None) or (k[0].upper() == chain_id.strip().upper())
-            seq_match = (resseq is None) or (k[1] == resseq.strip())
+            ch_match = (chain_id is None) or (k[0].upper() == str(chain_id).strip().upper())
+            seq_match = (resseq is None) or (k[1] == str(resseq).strip())
             if ch_match and seq_match:
-                chosen_key = k
-                break
-        if chosen_key is None:
+                matching.append(k)
+        if not matching:
             raise ValueError(
                 f"Reference ligand '{ligand_resname}' matching chain={chain_id}, resseq={resseq} not found."
             )
+        if len(matching) > 1:
+            choices = ", ".join(f"{chain or '_'}:{seq}" for chain, seq in matching)
+            raise ValueError(
+                f"Reference ligand {ligand_resname!r} has {len(matching)} matching instances ({choices}). "
+                "Choose its chain and residue number explicitly."
+            )
+        chosen_key = matching[0]
     else:
+        if len(instances) != 1:
+            choices = ", ".join(f"{chain or '_'}:{seq}" for chain, seq in instances)
+            raise ValueError(
+                f"Reference ligand {ligand_resname!r} has {len(instances)} instances ({choices}). "
+                "Choose its chain and residue number explicitly."
+            )
         chosen_key = instances[0]
 
     coords = coords_by_instance[chosen_key]
@@ -100,36 +113,72 @@ def define_grid_from_ligand(
     )
     return grid, coords_arr, ligand_pdb_text
 
+def _parse_residue_identifier(raw: str) -> tuple[int, str]:
+    match = re.fullmatch(r"(-?\d+)([A-Za-z]?)", raw.strip())
+    if not match:
+        raise ValueError(
+            f"Invalid residue identifier {raw!r}. Use a number optionally followed "
+            "by one insertion code, for example A:100 or A:100A."
+        )
+    return int(match.group(1)), match.group(2).upper()
+
+
+def _residue_identifier(residue) -> str:
+    insertion_code = str(residue.id[2]).strip().upper()
+    return f"{residue.id[1]}{insertion_code}"
+
+
 def define_grid_from_residues(pdb_string: str, residue_specs: list[str], padding: float = 10.0) -> GridBox:
-    """
-    Define a finite 3D docking search box based on a validated list of pocket residues.
-    Example residue_specs: ['A:790', 'A:858'] or ['790', '858'].
-    Prohibits origin-centred fallbacks.
-    """
     if not residue_specs:
         raise ValueError("No binding-site residues provided. Docking requires a validated pocket.")
 
     parser = PDBParser(QUIET=True)
-    struct = parser.get_structure("target", StringIO(pdb_string))
+    structure = parser.get_structure("target", StringIO(pdb_string))
+    model = structure[0]
 
-    coords = []
-    target_set = set(s.strip().upper() for s in residue_specs if s.strip())
+    parsed_specs: list[tuple[str | None, str]] = []
+    for raw_spec in residue_specs:
+        raw_spec = str(raw_spec).strip()
+        if not raw_spec:
+            continue
+        if ":" in raw_spec:
+            chain_id, residue_number = (part.strip() for part in raw_spec.split(":", 1))
+            if not chain_id or not residue_number:
+                raise ValueError(f"Invalid residue specification: {raw_spec!r}. Use CHAIN:RESIDUE, e.g. A:790.")
+            parsed_specs.append((chain_id, residue_number))
+        else:
+            parsed_specs.append((None, raw_spec))
 
-    for model in struct:
+    coordinates = []
+    for chain_id, residue_number in parsed_specs:
+        wanted_number, wanted_insertion_code = _parse_residue_identifier(residue_number)
+        matches = []
         for chain in model:
-            for res in chain:
-                res_num = str(res.id[1])
-                full_spec = f"{chain.id}:{res_num}".upper()
-                if full_spec in target_set or res_num in target_set:
-                    for atom in res.get_atoms():
-                        coords.append(atom.get_coord())
+            if chain_id is not None and chain.id != chain_id:
+                continue
+            for residue in chain:
+                if (
+                    residue.id[1] == wanted_number
+                    and str(residue.id[2]).strip().upper() == wanted_insertion_code
+                ):
+                    matches.append(residue)
 
-    if not coords:
-        raise ValueError(
-            f"None of the specified residues {residue_specs} were found in the receptor coordinates."
-        )
+        if not matches:
+            label = f"{chain_id}:{residue_number}" if chain_id else residue_number
+            raise ValueError(f"Binding-site residue {label} was not found in the receptor.")
+        if chain_id is None and len(matches) > 1:
+            matching_labels = ", ".join(f"{res.get_parent().id}:{_residue_identifier(res)}" for res in matches)
+            raise ValueError(
+                f"Residue {residue_number} occurs in more than one chain ({matching_labels}). "
+                "Use explicit CHAIN:RESIDUE values, for example A:790, A:858."
+            )
+        for residue in matches:
+            coordinates.extend(atom.get_coord() for atom in residue.get_atoms())
 
-    coords_arr = np.array(coords, dtype=np.float32)
+    coords_arr = np.asarray(coordinates, dtype=np.float32)
+    if coords_arr.size == 0:
+        raise ValueError("No atom coordinates were found for the selected binding-site residues.")
+
     center = coords_arr.mean(axis=0)
     ranges = coords_arr.max(axis=0) - coords_arr.min(axis=0)
     sizes = np.maximum(ranges + 2 * padding, 18.0)

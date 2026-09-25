@@ -1,7 +1,7 @@
 # Protein-Ligand Interaction and Pharmacological Profiler
 """
 وحدة تحليل التفاعلات الكيميائية بين الدواء والبروتين، وكشف الروابط الهيدروجينية،
-وتقييم الخصائص الصيدلانية ومعايير ليبينسكي (Lipinski's Rule of 5)، وتفسير مقاومة الأدوية.
+وتقييم الخصائص الصيدلانية ومعايير ليبينسكي (Lipinski's Rule of 5).
 """
 
 from io import StringIO
@@ -49,7 +49,7 @@ def calculate_drug_properties(smiles: str) -> dict:
         "tpsa": tpsa,
         "lipinski_violations": violations,
         "lipinski_pass": lipinski_pass,
-        "drug_likeness": "ممتازة (مطابق لقواعد ليبينسكي)" if lipinski_pass else f"تنبيه: يوجد {violations} تجاوزات لقواعد ليبينسكي"
+        "drug_likeness": "مطابق لقواعد ليبينسكي" if lipinski_pass else f"تنبيه: يوجد {violations} تجاوزات لقواعد ليبينسكي"
     }
 
 def _parse_atoms_from_block(block_text: str, is_ligand: bool = False) -> list[dict]:
@@ -93,28 +93,34 @@ def _parse_atoms_from_block(block_text: str, is_ligand: bool = False) -> list[di
 
     return atoms
 
+CONTACTS_DISCLAIMER = (
+    "Distance-based contact candidates only. They are not hydrogen-bond assignments, "
+    "binding free-energy components, or experimental interaction evidence."
+)
+
 def analyze_protein_ligand_interactions(
     receptor_pdb_text: str,
     ligand_pdbqt_block: str,
-    hbond_cutoff: float = 3.5,
+    polar_cutoff: float = 3.5,
     contact_cutoff: float = 4.0
 ) -> dict:
     """
-    تحليل دقيق للتفاعلات الكيميائية بين وضعية الدواء المستقبلة والمستقبل البروتيني:
-    1. الروابط الهيدروجينية (Hydrogen Bonds): ذرات O/N بمسافة <= 3.5 Å.
-    2. التماسات الكارهة للماء (Hydrophobic Contacts): ذرات كربون بمسافة <= 4.0 Å.
-    3. شبكة الأحماض المحيطة بجيب الارتباط (Interacting Pocket Residues).
+    استكشاف أولي قائم على المسافات الهندسية للتماسات بين وضعية الدواء والمستقبل البروتيني:
+    1. مرشحات التماس القطبي (Polar contact candidates): ذرات O/N/F بمسافة <= 3.5 Å.
+    2. مرشحات التماس الكربوني (Carbon contact candidates): ذرات كربون بمسافة <= 4.0 Å.
+    3. أحماض الجيب المحيطة المتماسة (Interacting Residues): أحماض بمسافة تماس <= 4.0 Å.
     """
     rec_atoms = _parse_atoms_from_block(receptor_pdb_text, is_ligand=False)
     lig_atoms = _parse_atoms_from_block(ligand_pdbqt_block, is_ligand=True)
 
     if not rec_atoms or not lig_atoms:
         return {
-            "hbonds": [],
-            "hydrophobic": [],
+            "polar_contact_candidates": [],
+            "carbon_contact_candidates": [],
             "interacting_residues": [],
-            "hbond_count": 0,
-            "hydrophobic_count": 0
+            "polar_contact_count": 0,
+            "carbon_contact_count": 0,
+            "disclaimer": CONTACTS_DISCLAIMER
         }
 
     rec_coords = np.array([a["coord"] for a in rec_atoms])
@@ -122,11 +128,11 @@ def analyze_protein_ligand_interactions(
 
     dist_matrix = cdist(rec_coords, lig_coords)
 
-    hbonds = []
-    hydrophobic = []
+    polar_contacts = []
+    carbon_contacts = []
     interacting_res_map = {}
 
-    hbond_elements = {"O", "N", "F"}
+    polar_elements = {"O", "N", "F"}
 
     for r_idx, r_atom in enumerate(rec_atoms):
         for l_idx, l_atom in enumerate(lig_atoms):
@@ -143,10 +149,10 @@ def analyze_protein_ligand_interactions(
                         "min_distance": round(dist, 2)
                     }
 
-            # 1. كشف الروابط الهيدروجينية (H-Bonds)
-            if dist <= hbond_cutoff:
-                if r_atom["element"] in hbond_elements and l_atom["element"] in hbond_elements:
-                    hbonds.append({
+            # 1. كشف مرشحات التماس القطبي (Polar Contact Candidates)
+            if dist <= polar_cutoff:
+                if r_atom["element"] in polar_elements and l_atom["element"] in polar_elements:
+                    polar_contacts.append({
                         "residue": f"{r_atom['res_name']}{r_atom['res_num']}",
                         "res_num": r_atom["res_num"],
                         "chain": r_atom["chain"],
@@ -155,24 +161,24 @@ def analyze_protein_ligand_interactions(
                         "distance_angstrom": round(dist, 2)
                     })
 
-            # 2. كشف التماسات الكارهة للماء (Carbon-Carbon)
-            elif dist <= contact_cutoff:
+            # 2. كشف مرشحات التماس الكربوني (Carbon-Carbon Contacts)
+            if dist <= contact_cutoff:
                 if r_atom["element"] == "C" and l_atom["element"] == "C":
-                    hydrophobic.append({
+                    carbon_contacts.append({
                         "residue": f"{r_atom['res_name']}{r_atom['res_num']}",
                         "res_num": r_atom["res_num"],
                         "chain": r_atom["chain"],
                         "distance_angstrom": round(dist, 2)
                     })
 
-    # إزالة التكرارات للروابط لنفس زوج الذرات
-    unique_hbonds = []
-    seen_hb = set()
-    for hb in hbonds:
-        key = (hb["residue"], hb["rec_atom"], hb["lig_atom"])
-        if key not in seen_hb:
-            seen_hb.add(key)
-            unique_hbonds.append(hb)
+    # إزالة التكرارات
+    unique_polar = []
+    seen_polar = set()
+    for pc in polar_contacts:
+        key = (pc["residue"], pc["rec_atom"], pc["lig_atom"])
+        if key not in seen_polar:
+            seen_polar.add(key)
+            unique_polar.append(pc)
 
     unique_interacting_res = sorted(
         list(interacting_res_map.values()),
@@ -180,11 +186,12 @@ def analyze_protein_ligand_interactions(
     )
 
     return {
-        "hbonds": unique_hbonds,
-        "hydrophobic": hydrophobic[:25],
+        "polar_contact_candidates": unique_polar,
+        "carbon_contact_candidates": carbon_contacts[:25],
         "interacting_residues": unique_interacting_res,
-        "hbond_count": len(unique_hbonds),
-        "hydrophobic_count": len(hydrophobic)
+        "polar_contact_count": len(unique_polar),
+        "carbon_contact_count": len(carbon_contacts),
+        "disclaimer": CONTACTS_DISCLAIMER
     }
 
 def compare_interactions(
@@ -193,17 +200,17 @@ def compare_interactions(
     mutation_residue_nums: list = None
 ) -> dict:
     """
-    مقارنة التفاعلات الكيميائية بين السليم والمصاب لتحديد:
-    - الروابط الهيدروجينية المفقودة (Lost H-Bonds) بسبب الطفرة.
-    - الروابط الهيدروجينية الجديدة (Gained H-Bonds).
-    - هل يدخل حمض الطفرة في تفاعل مباشر مع الدواء؟
+    مقارنة التماسات الاستكشافية بين السليم والمصاب لتحديد:
+    - مرشحات التماس القطبي المفقودة في المصاب.
+    - مرشحات التماس القطبي الجديدة في المصاب.
+    - هل يدخل حمض الطفرة في نطاق التماس المباشر مع الدواء؟
     """
-    h_hb_res = {hb["residue"] for hb in healthy_interactions.get("hbonds", [])}
-    m_hb_res = {hb["residue"] for hb in mutant_interactions.get("hbonds", [])}
+    h_polar_res = {c["residue"] for c in healthy_interactions.get("polar_contact_candidates", [])}
+    m_polar_res = {c["residue"] for c in mutant_interactions.get("polar_contact_candidates", [])}
 
-    lost_hb_residues = list(h_hb_res - m_hb_res)
-    gained_hb_residues = list(m_hb_res - h_hb_res)
-    conserved_hb_residues = list(h_hb_res.intersection(m_hb_res))
+    lost_polar_residues = list(h_polar_res - m_polar_res)
+    gained_polar_residues = list(m_polar_res - h_polar_res)
+    conserved_polar_residues = list(h_polar_res.intersection(m_polar_res))
 
     h_all_res_nums = {r["res_num"] for r in healthy_interactions.get("interacting_residues", [])}
     m_all_res_nums = {r["res_num"] for r in mutant_interactions.get("interacting_residues", [])}
@@ -214,68 +221,59 @@ def compare_interactions(
     mutation_engaged_mutant = any(n in m_all_res_nums for n in mut_nums_clean)
 
     return {
-        "lost_hb_residues": lost_hb_residues,
-        "gained_hb_residues": gained_hb_residues,
-        "conserved_hb_residues": conserved_hb_residues,
-        "healthy_hbond_count": healthy_interactions.get("hbond_count", 0),
-        "mutant_hbond_count": mutant_interactions.get("hbond_count", 0),
-        "mutation_engaged_in_binding": mutation_engaged_healthy or mutation_engaged_mutant,
-        "mutation_residues_checked": mut_nums_clean
+        "lost_polar_contact_residues": lost_polar_residues,
+        "gained_polar_contact_residues": gained_polar_residues,
+        "conserved_polar_contact_residues": conserved_polar_residues,
+        "healthy_polar_contact_count": healthy_interactions.get("polar_contact_count", 0),
+        "mutant_polar_contact_count": mutant_interactions.get("polar_contact_count", 0),
+        "mutation_engaged_in_contacts": mutation_engaged_healthy or mutation_engaged_mutant,
+        "mutation_residues_checked": mut_nums_clean,
+        "disclaimer": CONTACTS_DISCLAIMER
     }
 
-def interpret_resistance_risk(
-    delta_score: float,
-    lost_hbonds_count: int,
-    mutation_engaged: bool
-) -> dict:
-    """
-    تفسير صيدلاني سريري لنتائج فارق طاقة الارتباط ΔScore ومخاطر مقاومة الدواء:
-    ΔScore = Score_mutant - Score_healthy (تذكر: الدرجة الأقل بالسالب تعني ارتباط أقوى)
-    إذا كانت ΔScore موجبة بشكل كبير (+1.5 kcal/mol فأكثر) -> ضعف شديد في الارتباط (مقاومة دوائية).
-    """
-    if delta_score >= 1.5:
-        risk_level = "🔴 خطر مقاومة دوائية مرتفع (High Resistance Risk)"
-        risk_class = "danger"
-        summary = (
-            f"أظهرت المحاكاة ضعفاً كبيراً في تقارب الدواء للبروتين المصاب (فارق الطاقة ΔScore = +{delta_score:.2f} kcal/mol). "
-            f"يرتبط هذا التراجع عادةً بفشل العلاج السريري بسبب الإعاقة الفراغية أو فقدان روابط تثبيت حيوية."
-        )
-    elif delta_score >= 0.6:
-        risk_level = "🟠 خطر مقاومة متوسط / انخفاض في الفعالية (Moderate Resistance Risk)"
-        risk_class = "warning"
-        summary = (
-            f"هناك انخفاض ملحوظ في تقارب الدواء (ΔScore = +{delta_score:.2f} kcal/mol). "
-            f"قد يتطلب هذا رفع الجرعة أو استبدال الدواء بمثبط من جيل أحدث."
-        )
-    elif delta_score <= -1.5:
-        risk_level = "🟢 ارتباط انتقائي بالطافر (Mutant-Selective Binding)"
-        risk_class = "success"
-        summary = (
-            f"أظهر الدواء تفضيلاً كبيراً للارتباط بالبروتين المصاب (ΔScore = {delta_score:.2f} kcal/mol). "
-            f"هذا السلوك مثالي للأدوية الموجهة للطفرات (مثل مثبطات الجيل الثالث) لتقليل السمية على الخلايا السليمة."
-        )
-    else:
-        risk_level = "⚪ استجابة متقاربة / فعالية محفوظة (Preserved Binding / Minor Impact)"
-        risk_class = "info"
-        summary = (
-            f"فارق طاقة الارتباط طفيف جداً (ΔScore = {delta_score:+.2f} kcal/mol). "
-            f"من المتوقع احتفاظ الدواء بفعاليته الأساسية تجاه البروتين الطافر."
-        )
+class ScoreDifferenceInterpretation(str):
+    """Exploratory score difference interpretation string with helper accessors."""
 
-    clinical_pointers = []
-    if lost_hbonds_count > 0:
-        clinical_pointers.append(f"تم فقدان عدد ({lost_hbonds_count}) من الروابط الهيدروجينية المحورية في موقع الارتباط.")
-    if mutation_engaged:
-        clinical_pointers.append("حمض الطفرة يتواجد في مسافة تماس مباشر مع جزيء الدواء (Direct Binding Site Mutation).")
-    else:
-        clinical_pointers.append("حمض الطفرة يقع على أطراف الجيب أو يؤثر بشكل خيفي غير مباشر (Allosteric / Peripheral Effect).")
+    @property
+    def summary(self) -> str:
+        return str(self)
 
-    return {
-        "risk_level": risk_level,
-        "risk_class": risk_class,
-        "summary": summary,
-        "clinical_pointers": clinical_pointers
-    }
+    @property
+    def direction(self) -> str:
+        if "less favorable" in str(self):
+            return "less favorable"
+        elif "more favorable" in str(self):
+            return "more favorable"
+        return "unchanged"
+
+    @property
+    def category(self) -> str:
+        if self.direction == "less favorable":
+            return "فارق درجة أقل ملاءمة للمصاب (Less Favorable)"
+        elif self.direction == "more favorable":
+            return "فارق درجة أفضل للمصاب (More Favorable)"
+        return "فارق درجة غير متغير (Unchanged)"
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            if key == "summary":
+                return str(self)
+            elif key == "direction":
+                return self.direction
+            elif key == "category":
+                return self.category
+            raise KeyError(key)
+        return super().__getitem__(key)
+
+
+def interpret_score_difference(delta_score: float) -> ScoreDifferenceInterpretation:
+    sign = "less favorable" if delta_score > 0 else "more favorable" if delta_score < 0 else "unchanged"
+    msg = (
+        f"Exploratory protocol-specific score difference: {delta_score:+.2f} kcal/mol "
+        f"({sign} for the mutant under this docking setup). "
+        "This is not binding affinity, resistance, efficacy, or clinical guidance."
+    )
+    return ScoreDifferenceInterpretation(msg)
 
 def generate_2d_depiction_svg(smiles: str, width: int = 340, height: int = 220) -> str:
     """

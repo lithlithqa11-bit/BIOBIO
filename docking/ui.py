@@ -1,6 +1,8 @@
 # Docking Streamlit UI Module
 import os
 import datetime
+import hashlib
+import json
 from pathlib import Path
 import streamlit as st
 import pandas as pd
@@ -27,9 +29,11 @@ from docking.interactions import (
     calculate_drug_properties,
     analyze_protein_ligand_interactions,
     compare_interactions,
-    interpret_resistance_risk,
-    generate_2d_depiction_svg
+    interpret_score_difference,
+    generate_2d_depiction_svg,
+    CONTACTS_DISCLAIMER,
 )
+from docking.openbabel_io import require_openbabel_formats
 from docking.pubchem import fetch_drug_from_pubchem
 import plotly.graph_objects as go
 import numpy as np
@@ -138,6 +142,19 @@ def find_recovery_pose_index(poses: list, validation_details: dict | None) -> in
             return index
     return 0
 
+def compute_input_fingerprint(params: dict) -> str:
+    """Compute stable SHA-256 fingerprint for result-defining input parameters."""
+    serialized = json.dumps(params, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+def compute_text_sha256(text: str | None) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+def lowest_vina_score(poses) -> float | None:
+    """Return the lowest Vina score across all calculated poses."""
+    scores = [float(pose.score) for pose in poses if getattr(pose, "score", None) is not None]
+    return min(scores) if scores else None
+
 def render_docking_tab():
     st.header("🔬 محاكاة الارتباط الجزيئي (Docking)")
     vina_ver = get_vina_version()
@@ -146,6 +163,13 @@ def render_docking_tab():
     vina_exec = get_vina_path()
     if not vina_exec.exists():
         st.error(f"❌ لم يتم العثور على ملف المحرك Vina في المسار: {vina_exec}")
+        return
+
+    try:
+        require_openbabel_formats()
+    except Exception as exc:
+        st.error(f"❌ Open Babel is not ready for docking: {exc}")
+        st.info("Redeploy after installing the pinned openbabel-wheel dependency.")
         return
 
 
@@ -163,7 +187,7 @@ def render_docking_tab():
         with tb_col2:
             ui_mode = st.radio(
                 "⚡ نمط الواجهة والتجربة:",
-                ["⚡ النمط السريري السريع (Quick Clinical Mode)", "🔬 النمط البحثي المتقدم (Advanced Research Mode)"],
+                ["⚡ النمط الاستكشافي السريع (Quick Exploratory Mode)", "🔬 النمط البحثي المتقدم (Advanced Research Mode)"],
                 horizontal=True,
                 key="docking_interface_mode"
             )
@@ -172,7 +196,7 @@ def render_docking_tab():
         if is_advanced_mode:
             st.info("🔬 **النمط البحثي المتقدم مفعّل:** يتيح لك التحكم الكامل في معاملات محرك AutoDock Vina (دقة البحث، البذور، عدد الوضعيات، ونطاق الطاقة) مع استعراض تحليلي إحصائي موسّع للعناقيد والتحقق من الوضعيات.")
         else:
-            st.success("⚡ **النمط السريري السريع مفعّل:** إعدادات معيارية محددة مسبقاً (دقة = 8، 3 بذور مستقلة). واجهة سلسة وموجزة تركز على التقييم الصيدلاني وقوة الارتباط المباشرة دون إرباك بالبيانات الحسابية المعقدة.")
+            st.info("⚡ **النمط الاستكشافي السريع مفعّل (Quick Exploratory Mode):** عرض مبسط وغير سريري (non-clinical) لنفس بروتوكول الإرساء بإعدادات قياسية (دقة = 8، 3 بذور مستقلة).")
 
     if workflow_mode == "single_docking":
         _render_single_docking_ui(vina_ver, is_advanced_mode=is_advanced_mode)
@@ -268,25 +292,43 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
             )
 
             ref_ligand_code = ""
+            ref_lig_chain = ""
+            ref_lig_resseq = ""
             pocket_residues_input = ""
             is_1m17 = (target_mode == "custom_pdb" and custom_target_id == "1M17")
 
             if site_mode == "co_crystal_ligand":
-                default_ref_lig = st.session_state.get("dock_ref_lig_input", "") or ("AQ4" if is_1m17 else st.session_state.get("dock_ref_lig_val", ""))
-                ref_ligand_code = st.text_input(
-                    "كود الربيطة (Ligand):",
-                    value=default_ref_lig,
-                    placeholder="مثال: AQ4",
-                    key="dock_ref_lig_input"
-                ).strip().upper()
-                if not is_1m17:
-                    st.session_state["dock_ref_lig_val"] = ref_ligand_code
+                col_rf1, col_rf2, col_rf3 = st.columns([1.5, 1.0, 1.0])
+                with col_rf1:
+                    default_ref_lig = st.session_state.get("dock_ref_lig_input", "") or ("AQ4" if is_1m17 else st.session_state.get("dock_ref_lig_val", ""))
+                    ref_ligand_code = st.text_input(
+                        "كود الربيطة (Ligand):",
+                        value=default_ref_lig,
+                        placeholder="مثال: AQ4",
+                        key="dock_ref_lig_input"
+                    ).strip().upper()
+                    if not is_1m17:
+                        st.session_state["dock_ref_lig_val"] = ref_ligand_code
+                with col_rf2:
+                    ref_lig_chain = st.text_input(
+                        "سلسلة الربيطة (Chain):",
+                        value=st.session_state.get("dock_ref_lig_chain", ""),
+                        placeholder="مثال: A (اختياري)",
+                        key="dock_ref_lig_chain"
+                    ).strip()
+                with col_rf3:
+                    ref_lig_resseq = st.text_input(
+                        "رقم بقية الربيطة (Residue #):",
+                        value=st.session_state.get("dock_ref_lig_resseq", ""),
+                        placeholder="مثال: 1001 (اختياري)",
+                        key="dock_ref_lig_resseq"
+                    ).strip()
             else:
-                default_pocket_res = st.session_state.get("dock_pocket_res_input", "") or ("790, 858" if is_1m17 else st.session_state.get("dock_pocket_res_val", ""))
+                default_pocket_res = st.session_state.get("dock_pocket_res_input", "") or ("A:790, A:858" if is_1m17 else st.session_state.get("dock_pocket_res_val", ""))
                 pocket_residues_input = st.text_input(
                     "أرقام الأحماض الأمينية:",
                     value=default_pocket_res,
-                    placeholder="مثال: 790, 858",
+                    placeholder="مثال: A:790, A:858",
                     key="dock_pocket_res_input"
                 )
                 if not is_1m17:
@@ -433,7 +475,31 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 energy_range = 3.0
                 st.caption("⚡ **إعدادات سريعة قياسية:** دقة البحث = 8 | 3 بذور عشوائية مستقلة [42, 101, 2024] لضمان التكرارية | 9 وضعيات.")
 
+    single_fp_payload = {
+        "workflow": "single_docking",
+        "target_identity": current_target_identity,
+        "site_mode": site_mode,
+        "ref_ligand_code": ref_ligand_code if site_mode == "co_crystal_ligand" else "",
+        "ref_lig_chain": ref_lig_chain if site_mode == "co_crystal_ligand" else "",
+        "ref_lig_resseq": ref_lig_resseq if site_mode == "co_crystal_ligand" else "",
+        "pocket_residues": pocket_residues_input if site_mode == "residue_defined" else "",
+        "pocket_padding": pocket_padding,
+        "ligand_name": ligand_name,
+        "ligand_smiles": ligand_smiles,
+        "exhaustiveness": exhaustiveness,
+        "seed_choice": seed_choice,
+        "num_modes": num_modes,
+        "energy_range": energy_range,
+        "vina_version": vina_ver,
+    }
+    current_single_fp = compute_input_fingerprint(single_fp_payload)
+    prev_single_fp = st.session_state.get("dock_single_input_fingerprint")
+    if prev_single_fp and prev_single_fp != current_single_fp:
+        st.session_state.pop("current_docking_result", None)
+    st.session_state["dock_single_input_fingerprint"] = current_single_fp
+
     if st.button("🚀 بدء الإرساء (Run Docking)", type="primary"):
+        st.session_state.pop("current_docking_result", None)
         if site_mode == "co_crystal_ligand" and not ref_ligand_code:
             st.error("يرجى إدخال كود الربيطة المرجعية لتحديد جيب الارتباط.")
             return
@@ -526,6 +592,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         binding_site_meta = {
             "method": site_mode,
             "reference_ligand": ref_ligand_code if site_mode == "co_crystal_ligand" else None,
+            "reference_ligand_chain": ref_lig_chain if site_mode == "co_crystal_ligand" and ref_lig_chain else None,
+            "reference_ligand_resseq": ref_lig_resseq if site_mode == "co_crystal_ligand" and ref_lig_resseq else None,
             "residues": pocket_residues_input if site_mode == "residue_defined" else None,
             "padding": pocket_padding
         }
@@ -547,8 +615,13 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
         ref_ligand_pdb_text = ""
         try:
             if site_mode == "co_crystal_ligand":
+                parsed_resseq = int(ref_lig_resseq) if ref_lig_resseq and ref_lig_resseq.isdigit() else None
                 grid, ref_coords, ref_ligand_pdb_text = define_grid_from_ligand(
-                    pdb_data, ref_ligand_code, padding=pocket_padding
+                    pdb_data,
+                    ref_ligand_code,
+                    padding=pocket_padding,
+                    chain_id=ref_lig_chain or None,
+                    resseq=parsed_resseq
                 )
                 with open(run_dir / "reference_ligand.pdb", "w", encoding="utf-8") as f:
                     f.write(ref_ligand_pdb_text + "\n")
@@ -785,7 +858,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 engine_meta=engine_meta,
                 grid_meta=grid_meta,
                 results_meta=results_meta,
-                warnings=warnings
+                warnings=warnings,
+                input_fingerprint=current_single_fp
             )
 
             st.session_state["current_docking_result"] = {
@@ -802,7 +876,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 "validation_status": validation_status,
                 "validation_details": validation_details,
                 "warnings": warnings,
-                "run_dir": run_dir
+                "run_dir": run_dir,
+                "input_fingerprint": current_single_fp
             }
             st.success(f"✅ اكتمل الإرساء بنجاح! ({run_id})")
 
@@ -814,7 +889,8 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
         val_stat = res["validation_status"]
         val_det = res.get("validation_details")
-        best_affinity = f"{res['poses'][0].score:.2f} kcal/mol" if res.get("poses") else "—"
+        best_score = lowest_vina_score(res.get("poses", []))
+        best_score_display = f"{best_score:.2f} kcal/mol" if best_score is not None else "—"
         total_poses_count = len(res.get("poses", []))
         clusters_count = len(res.get("clusters", []))
 
@@ -831,29 +907,32 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                 gate_badge = "⚪ غير متاح (دواء جديد)"
 
             kpi_col1.metric("🎯 حالة التحقق (Gate A)", gate_badge)
-            kpi_col2.metric("⚡ أفضل طاقة ارتباط", best_affinity)
+            kpi_col2.metric("Lowest Vina score (all poses)", best_score_display)
             kpi_col3.metric("🔢 عدد الوضعيات المحسوبة", f"{total_poses_count} وضعية")
             kpi_col4.metric("👥 مجموعات العناقيد", f"{clusters_count} عناقيد")
 
-        # Clinical Summary for Quick Mode
+        # Exploratory Summary for Quick Mode
         if not is_advanced_mode:
-            best_score_val = res['poses'][0].score if res.get('poses') else 0.0
-            if best_score_val <= -8.0:
-                strength_label = "🟢 ارتباط قوي جداً (High Binding Affinity)"
-                strength_desc = "طاقة الارتباط منخفضة جداً، مما يشير إلى ثبات واستقرار عالٍ للدواء داخل جيب البروتين وتثبيط فعال."
-            elif best_score_val <= -6.0:
-                strength_label = "🟡 ارتباط متوسط إلى جيد (Moderate Affinity)"
-                strength_desc = "طاقة الارتباط تقع ضمن النطاق الدوائي النموذجي لمعظم المثبطات المعتمدة سريرياً."
-            else:
-                strength_label = "🔴 ارتباط ضعيف (Weak Affinity)"
-                strength_desc = "طاقة الارتباط مرتفعة نسبياً، مما قد يشير إلى ضعف الحساسية أو مقاومة دوائية محتملة."
-
             with st.container(border=True):
-                st.markdown(f"#### 🩺 التقييم السريري المباشر: {strength_label}")
-                st.markdown(f"- **طاقة الارتباط الأفضل:** `{best_score_val:.2f} kcal/mol` — {strength_desc}")
+                st.markdown("#### Exploratory docking summary")
+                if best_score is None:
+                    st.markdown("- No docked pose is available.")
+                else:
+                    st.markdown(
+                        f"- **Lowest Vina score among all calculated poses:** "
+                        f"`{best_score:.2f} kcal/mol`\n"
+                        "- This is a Vina scoring-function value for this exact prepared "
+                        "receptor, ligand, grid, and search protocol. It is useful for "
+                        "within-protocol pose ranking only; it is not experimental binding "
+                        "free energy, efficacy, resistance, dose, or clinical guidance."
+                    )
                 if d_props and "lipinski_pass" in d_props:
-                    lip_msg = "✅ مطابق لقواعد ليبينسكي للدواء الفموي" if d_props["lipinski_pass"] else f"⚠️ {d_props.get('drug_likeness', 'غير مطابق لمعايير الدواء الفموي')}"
-                    st.markdown(f"- **الخواص الصيدلانية الفموية:** {lip_msg}")
+                    st.markdown(
+                        "- **Rule-of-Five screen:** "
+                        f"`{d_props['lipinski_violations']}` threshold violation(s). "
+                        "This is a physicochemical heuristic only, not an ADME, safety, "
+                        "or clinical-use prediction."
+                    )
 
         # Status badge & warnings
         if val_stat == "validation passed (Top-10 recovery)":
@@ -947,13 +1026,24 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     ligand_pdbqt_block=active_pose.pdbqt_block
                 )
             except Exception:
-                single_inter = {"hbonds": [], "hydrophobic": [], "interacting_residues": [], "hbond_count": 0, "hydrophobic_count": 0}
+                single_inter = {
+                    "polar_contact_candidates": [],
+                    "carbon_contact_candidates": [],
+                    "interacting_residues": [],
+                    "polar_contact_count": 0,
+                    "carbon_contact_count": 0,
+                    "hbonds": [],
+                    "hydrophobic": [],
+                    "hbond_count": 0,
+                    "hydrophobic_count": 0,
+                }
 
             # Layout: 60% 3D Viewer, 40% Interactions Details
             col_v3d, col_vint = st.columns([1.5, 1.0])
             with col_v3d:
-                st.caption("🟢 الأخضر: وضعية الدواء المحسوبة | ⚪ الرمادي: موضع الربيطة البلورية المرجعية | 🟣 الوردي: أحماض الروابط الهيدروجينية")
+                st.caption("🟢 الأخضر: وضعية الدواء المحسوبة | ⚪ الرمادي: موضع الربيطة البلورية المرجعية | 🟣 الوردي: أحماض التماس القطبي")
                 active_pose_pdbqt = active_pose.pdbqt_block
+                polar_candidates = single_inter.get("polar_contact_candidates") or single_inter.get("hbonds", [])
                 view_html = render_docked_complex_3d(
                     res["clean_pdb"],
                     active_pose_pdbqt,
@@ -961,7 +1051,7 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                     show_surface=dock_show_surface,
                     surface_opacity=dock_surf_opacity,
                     surface_type=dock_surf_type.split()[0],
-                    hbonds=single_inter.get("hbonds"),
+                    hbonds=polar_candidates,
                     show_ligand=dock_show_ligand,
                     ligand_style=dock_lig_style,
                     grid_box=res.get("grid"),
@@ -971,14 +1061,17 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
 
             with col_vint:
                 with st.container(border=True):
-                    st.markdown("##### 🔗 التفاعلات الدوائية للوضعية")
+                    st.markdown("##### 🔗 التماسات الوضعية الاستكشافية")
+                    st.info(CONTACTS_DISCLAIMER)
                     si_col1, si_col2 = st.columns(2)
-                    si_col1.metric("الروابط الهيدروجينية", single_inter["hbond_count"])
-                    si_col2.metric("التماسات الكارهة للماء", single_inter["hydrophobic_count"])
+                    p_count = single_inter.get("polar_contact_count", single_inter.get("hbond_count", 0))
+                    c_count = single_inter.get("carbon_contact_count", single_inter.get("hydrophobic_count", 0))
+                    si_col1.metric("مرشحات التماس القطبي", p_count)
+                    si_col2.metric("مرشحات تماس الكربون", c_count)
 
-                    if single_inter["hbonds"]:
-                        st.markdown("###### 💧 الروابط الهيدروجينية (H-Bonds <= 3.5 Å):")
-                        df_hb = pd.DataFrame(single_inter["hbonds"]).rename(columns={
+                    if polar_candidates:
+                        st.markdown("###### 💧 مرشحات التماس القطبي (Polar Contacts <= 3.5 Å):")
+                        df_hb = pd.DataFrame(polar_candidates).rename(columns={
                             "residue": "الحمض",
                             "chain": "السلسلة",
                             "rec_atom": "ذرة المستقبل",
@@ -987,9 +1080,9 @@ def _render_single_docking_ui(vina_ver: str, is_advanced_mode: bool = False):
                         })[["الحمض", "السلسلة", "ذرة المستقبل", "ذرة الدواء", "المسافة (Å)"]]
                         st.dataframe(df_hb, use_container_width=True, hide_index=True, height=160)
                     else:
-                        st.info("لا توجد روابط هيدروجينية مباشرة مسافتها <= 3.5 Å في هذه الوضعية.")
+                        st.info("لا توجد مرشحات تماس قطبي مباشرة مسافتها <= 3.5 Å في هذه الوضعية.")
 
-                    if single_inter["interacting_residues"]:
+                    if single_inter.get("interacting_residues"):
                         st.markdown("###### 🧱 أحماض الجيب المحيطة (Contacts <= 4.0 Å):")
                         df_ir = pd.DataFrame(single_inter["interacting_residues"]).rename(columns={
                             "res_name": "الحمض",
@@ -1049,8 +1142,8 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
         with col_m2:
             st.metric("البروتين المصاب (Mutant)", st.session_state.get("m_id", "MUTANT"))
         with col_m3:
-            default_pocket = st.session_state.get("comp_pocket_val") or st.session_state.get("dock_pocket_res_val", "790, 858")
-            pocket_res = st.text_input("أحماض جيب الارتباط:", value=default_pocket, placeholder="مثال: 790, 858", key="comp_pocket_input")
+            default_pocket = st.session_state.get("comp_pocket_val") or st.session_state.get("dock_pocket_res_val", "A:790, A:858")
+            pocket_res = st.text_input("أحماض جيب الارتباط:", value=default_pocket, placeholder="مثال: A:790, A:858", key="comp_pocket_input")
         with col_m4:
             default_domain = st.session_state.get("comp_domain_val") or st.session_state.get("dock_target_domain", "Kinase Domain")
             target_domain = st.text_input("النطاق الوظيفي (Domain):", value=default_domain, key="comp_domain_input")
@@ -1126,7 +1219,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         cdp5.metric("مستقبل H-Bond", comp_drug_props['hba'])
                         cdp6.metric("الروابط الدوارة", comp_drug_props['rotatable_bonds'])
                         if comp_drug_props['lipinski_pass']:
-                            st.caption("✅ الجزيء يتوافق مع معايير ليبينسكي للدواء الفموي البشري.")
+                            st.caption(f"✅ فحص معايير ليبينسكي: {comp_drug_props.get('lipinski_violations', 0)} تجاوزات. معيار فيزيائي-كيميائي أولي وليس تنبؤاً بامتصاص أو أمان سريري.")
                         else:
                             st.caption(f"⚠️ {comp_drug_props['drug_likeness']}")
 
@@ -1140,32 +1233,71 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     st.caption("🔬 يتم تطبيق نفس الإعدادات الصارمة على البروتينين (السليم والمصاب) بالتوازي عبر 3 بذور مستقلة لضمان التكافؤ الإحصائي التام.")
             else:
                 exh = 8
-                st.caption("⚡ **النمط السريع:** دقة البحث = 8 | فحص السليم والمصاب بالتوازي عبر 3 بذور مستقلة.")
+                st.caption("⚡ **النمط الاستكشافي السريع:** دقة البحث = 8 | فحص السليم والمصاب بالتوازي عبر 3 بذور مستقلة.")
+
+        h_active_pdb = st.session_state.get("h_assembly_pdb") or st.session_state.get("h_pdb") or ""
+        m_active_pdb = st.session_state.get("m_assembly_pdb") or st.session_state.get("m_pdb") or ""
+
+        h_coordinate_source = (
+            "biological_assembly_1"
+            if st.session_state.get("h_assembly_pdb")
+            else "deposited_or_uploaded"
+        )
+        m_coordinate_source = (
+            "biological_assembly_1"
+            if st.session_state.get("m_assembly_pdb")
+            else "deposited_or_uploaded"
+        )
+
+        comp_fp_payload = {
+            "workflow": "matched_healthy_vs_mutant",
+            "healthy_id": st.session_state.get("h_id", ""),
+            "mutant_id": st.session_state.get("m_id", ""),
+            "healthy_coordinate_source": h_coordinate_source,
+            "mutant_coordinate_source": m_coordinate_source,
+            "healthy_coordinate_sha256": compute_text_sha256(h_active_pdb),
+            "mutant_coordinate_sha256": compute_text_sha256(m_active_pdb),
+            "pocket_res": pocket_res,
+            "target_domain": target_domain,
+            "lig_name": lig_name,
+            "lig_smiles": lig_smiles,
+            "exhaustiveness": exh,
+            "vina_version": vina_ver,
+        }
+        current_comp_fp = compute_input_fingerprint(comp_fp_payload)
+        prev_comp_fp = st.session_state.get("dock_comp_input_fingerprint")
+        if prev_comp_fp and prev_comp_fp != current_comp_fp:
+            st.session_state.pop("matched_comparison_result", None)
+        st.session_state["dock_comp_input_fingerprint"] = current_comp_fp
 
         if st.button("🚀 تشغيل المقارنة للدواء المحدد (Run Comparison)", type="primary"):
+            st.session_state.pop("matched_comparison_result", None)
             res_list = [r.strip() for r in pocket_res.split(",") if r.strip()]
             if not res_list:
                 st.error("Docking was not run: define a validated binding site.")
                 return
+            if not lig_smiles.strip():
+                st.error("يرجى إدخال صيغة SMILES للدواء.")
+                return
 
             with st.spinner("جاري تنفيذ الإرساء المتطابق للسليم والمصاب عبر 3 بذور مستقلة..."):
-                h_pdb = st.session_state.get("h_assembly_pdb") or st.session_state.get("h_pdb")
-                m_pdb = st.session_state.get("m_assembly_pdb") or st.session_state.get("m_pdb")
                 h_meta = {"pdb_id": st.session_state.get("h_id"), "target_domain": target_domain, "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
                 m_meta = {"pdb_id": st.session_state.get("m_id"), "target_domain": target_domain, "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 
                 try:
                     comp_result = run_matched_docking_comparison(
-                        healthy_pdb_text=h_pdb,
-                        mutant_pdb_text=m_pdb,
+                        healthy_pdb_text=h_active_pdb,
+                        mutant_pdb_text=m_active_pdb,
                         healthy_target_meta=h_meta,
                         mutant_target_meta=m_meta,
                         ligand_smiles=lig_smiles,
                         ligand_name=lig_name,
                         pocket_residues=res_list,
                         target_domain=target_domain,
-                        exhaustiveness=exh
+                        exhaustiveness=exh,
+                        input_fingerprint=current_comp_fp,
                     )
+                    comp_result["input_fingerprint"] = current_comp_fp
                     st.session_state["matched_comparison_result"] = comp_result
                     st.success("✅ اكتملت المقارنة بنجاح!")
                 except Exception as e:
@@ -1176,7 +1308,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             st.markdown("---")
             st.subheader(f"📊 نتائج المقارنة الإرسائية: {comp['comparison_label']}")
 
-            # ── حساب التفاعلات الصيدلانية ومقاومة الدواء ──
+            # ── حساب التفاعلات الصيدلانية ──
             h_clean_text = ""
             m_clean_text = ""
             try:
@@ -1195,11 +1327,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
 
             pocket_nums = [r.strip() for r in pocket_res.split(",") if r.strip()] if pocket_res else []
             comp_inter = compare_interactions(h_inter, m_inter, mutation_residue_nums=pocket_nums)
-            resistance_info = interpret_resistance_risk(
-                delta_score=comp["delta_score"],
-                lost_hbonds_count=len(comp_inter["lost_hb_residues"]),
-                mutation_engaged=comp_inter["mutation_engaged_in_binding"]
-            )
+            score_diff_info = interpret_score_difference(comp["delta_score"])
 
             # Top KPI Metric Cards
             with st.container(border=True):
@@ -1207,7 +1335,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                 kpi_c1.metric("السليم (Healthy WT)", f"{comp['healthy']['dominant_cluster_median']} kcal/mol")
                 kpi_c2.metric("المصاب (Mutant MT)", f"{comp['mutant']['dominant_cluster_median']} kcal/mol")
                 kpi_c3.metric("فارق الدرجة (ΔScore)", f"{comp['delta_score']:+.2f} kcal/mol")
-                kpi_c4.metric("تقييم المقاومة", resistance_info["risk_level"].split()[0] + " " + resistance_info["risk_level"].split()[1] if len(resistance_info["risk_level"].split()) > 1 else resistance_info["risk_level"])
+                kpi_c4.metric("تفسير فارق الدرجة", score_diff_info["category"])
 
             col_s1, col_s2 = st.columns(2)
             with col_s1:
@@ -1215,12 +1343,12 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             with col_s2:
                 st.write(f"**بذور المصاب الداعمة:** {comp['mutant']['dominant_cluster_seeds']} ({comp['mutant']['seed_count']})")
 
-            st.caption("ملاحظة: ΔScore = الدرجة الوسيطة للمصاب - الدرجة الوسيطة للسليم (القيم السالبة الأكبر تعني تقارباً أقوى).")
+            st.caption("ملاحظة: ΔScore = الدرجة الوسيطة للمصاب - الدرجة الوسيطة للسليم (القيم السالبة الأكبر تعني تقارباً أفضل تحت بروتوكول الإرساء هذا).")
 
             # تفاصيل نتائج المقارنة في تبويبات منظمة
             comp_tab_3d, comp_tab_resist = st.tabs([
                 "🔮 المقارنة ثلاثية الأبعاد المتزامنة (WT vs MT 3D)",
-                "🔬 تقييم مقاومة الدواء والتفاعلات (Resistance & H-Bonds)"
+                "🔬 مرشحات التماس الاستكشافية (Exploratory Contacts)"
             ])
 
             with comp_tab_3d:
@@ -1246,7 +1374,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                 v_col1, v_col2 = st.columns(2)
                 with v_col1:
                     st.markdown(f"**🟢 السليم (Healthy): {comp['healthy']['target_id']}**")
-                    st.caption("🟣 الأحماض الوردية: أحماض الروابط الهيدروجينية المكتشفة بالسليم")
+                    st.caption("🟣 الأحماض الوردية: أحماض التماس القطبي المكتشفة بالسليم")
                     h_view_html = render_docked_complex_3d(
                         comp['healthy']['clean_pdb'],
                         h_top_pose,
@@ -1255,7 +1383,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         surface_opacity=comp_surf_opacity,
                         surface_type=comp_surf_type.split()[0],
                         pocket_residues=pocket_nums,
-                        hbonds=h_inter.get("hbonds"),
+                        hbonds=h_inter.get("polar_contact_candidates") or h_inter.get("hbonds"),
                         show_ligand=comp_show_ligand,
                         ligand_style=comp_lig_style,
                         grid_box=comp['healthy'].get('grid'),
@@ -1265,7 +1393,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
 
                 with v_col2:
                     st.markdown(f"**🔴 المصاب (Mutant): {comp['mutant']['target_id']}**")
-                    st.caption("🟣 الأحماض الوردية: أحماض الروابط الهيدروجينية بالمصاب | 🟠 البرتقالية: موقع أحماض الجيب")
+                    st.caption("🟣 الأحماض الوردية: أحماض التماس القطبي بالمصاب | 🟠 البرتقالية: موقع أحماض الجيب")
                     m_view_html = render_docked_complex_3d(
                         comp['mutant']['clean_pdb'],
                         m_top_pose,
@@ -1274,7 +1402,7 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                         surface_opacity=comp_surf_opacity,
                         surface_type=comp_surf_type.split()[0],
                         pocket_residues=pocket_nums,
-                        hbonds=m_inter.get("hbonds"),
+                        hbonds=m_inter.get("polar_contact_candidates") or m_inter.get("hbonds"),
                         show_ligand=comp_show_ligand,
                         ligand_style=comp_lig_style,
                         grid_box=comp['mutant'].get('grid'),
@@ -1283,60 +1411,63 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
                     components.html(m_view_html, height=480)
 
             with comp_tab_resist:
-                if resistance_info["risk_class"] == "danger":
-                    st.error(f"### {resistance_info['risk_level']}")
-                elif resistance_info["risk_class"] == "warning":
-                    st.warning(f"### {resistance_info['risk_level']}")
-                elif resistance_info["risk_class"] == "success":
-                    st.success(f"### {resistance_info['risk_level']}")
+                if score_diff_info["direction"] == "less favorable":
+                    st.warning(f"### {score_diff_info['category']}")
+                elif score_diff_info["direction"] == "more favorable":
+                    st.success(f"### {score_diff_info['category']}")
                 else:
-                    st.info(f"### {resistance_info['risk_level']}")
+                    st.info(f"### {score_diff_info['category']}")
 
-                st.write(resistance_info["summary"])
-                for ptr in resistance_info["clinical_pointers"]:
-                    st.markdown(f"- 📌 {ptr}")
+                st.write(score_diff_info["summary"])
+                st.info(CONTACTS_DISCLAIMER)
 
                 with st.container(border=True):
                     rc_col1, rc_col2, rc_col3 = st.columns(3)
-                    rc_col1.metric("روابط السليم الهيدروجينية", comp_inter["healthy_hbond_count"])
-                    rc_col2.metric("روابط المصاب الهيدروجينية", comp_inter["mutant_hbond_count"])
-                    rc_col3.metric("الروابط المفقودة في المصاب", len(comp_inter["lost_hb_residues"]))
+                    p_healthy = comp_inter.get("healthy_polar_count", comp_inter.get("healthy_hbond_count", 0))
+                    p_mutant = comp_inter.get("mutant_polar_count", comp_inter.get("mutant_hbond_count", 0))
+                    lost_polar = comp_inter.get("lost_polar_residues", comp_inter.get("lost_hb_residues", []))
+                    gained_polar = comp_inter.get("gained_polar_residues", comp_inter.get("gained_hb_residues", []))
+                    conserved_polar = comp_inter.get("conserved_polar_residues", comp_inter.get("conserved_hb_residues", []))
 
-                    if comp_inter["lost_hb_residues"]:
-                        st.error(f"⚠️ **الروابط الهيدروجينية المفقودة في البروتين الطافر:** {', '.join(comp_inter['lost_hb_residues'])}")
-                    if comp_inter["gained_hb_residues"]:
-                        st.success(f"✨ **الروابط الهيدروجينية الجديدة في البروتين الطافر:** {', '.join(comp_inter['gained_hb_residues'])}")
-                    if comp_inter["conserved_hb_residues"]:
-                        st.info(f"🛡️ **الروابط الهيدروجينية المحفوظة:** {', '.join(comp_inter['conserved_hb_residues'])}")
+                    rc_col1.metric("مرشحات تماس السليم القطبي", p_healthy)
+                    rc_col2.metric("مرشحات تماس المصاب القطبي", p_mutant)
+                    rc_col3.metric("مرشحات مفقودة في المصاب", len(lost_polar))
+
+                    if lost_polar:
+                        st.warning(f"⚠️ **مرشحات التماس القطبي المفقودة في البروتين الطافر:** {', '.join(lost_polar)}")
+                    if gained_polar:
+                        st.success(f"✨ **مرشحات التماس القطبي الجديدة في البروتين الطافر:** {', '.join(gained_polar)}")
+                    if conserved_polar:
+                        st.info(f"🛡️ **مرشحات التماس القطبي المحفوظة:** {', '.join(conserved_polar)}")
 
                     col_tb1, col_tb2 = st.columns(2)
                     with col_tb1:
-                        st.markdown("**🟢 روابط السليم الهيدروجينية (WT H-Bonds):**")
-                        if h_inter["hbonds"]:
-                            df_h_hb = pd.DataFrame(h_inter["hbonds"]).rename(columns={
+                        st.markdown("**🟢 مرشحات تماس السليم القطبي (WT Polar Contacts):**")
+                        h_polar = h_inter.get("polar_contact_candidates") or h_inter.get("hbonds", [])
+                        if h_polar:
+                            df_h_hb = pd.DataFrame(h_polar).rename(columns={
                                 "residue": "الحمض", "chain": "السلسلة", "rec_atom": "ذرة المستقبل", "lig_atom": "ذرة الدواء", "distance_angstrom": "المسافة (Å)"
                             })[["الحمض", "السلسلة", "ذرة المستقبل", "ذرة الدواء", "المسافة (Å)"]]
                             st.dataframe(df_h_hb, use_container_width=True, hide_index=True)
                         else:
-                            st.caption("لا توجد روابط هيدروجينية بمسافة <= 3.5 Å.")
+                            st.caption("لا توجد مرشحات تماس قطبي بمسافة <= 3.5 Å.")
 
                     with col_tb2:
-                        st.markdown("**🔴 روابط المصاب الهيدروجينية (Mutant H-Bonds):**")
-                        if m_inter["hbonds"]:
-                            df_m_hb = pd.DataFrame(m_inter["hbonds"]).rename(columns={
+                        st.markdown("**🔴 مرشحات تماس المصاب القطبي (Mutant Polar Contacts):**")
+                        m_polar = m_inter.get("polar_contact_candidates") or m_inter.get("hbonds", [])
+                        if m_polar:
+                            df_m_hb = pd.DataFrame(m_polar).rename(columns={
                                 "residue": "الحمض", "chain": "السلسلة", "rec_atom": "ذرة المستقبل", "lig_atom": "ذرة الدواء", "distance_angstrom": "المسافة (Å)"
                             })[["الحمض", "السلسلة", "ذرة المستقبل", "ذرة الدواء", "المسافة (Å)"]]
                             st.dataframe(df_m_hb, use_container_width=True, hide_index=True)
                         else:
-                            st.caption("لا توجد روابط هيدروجينية بمسافة <= 3.5 Å.")
-
-
+                            st.caption("لا توجد مرشحات تماس قطبي بمسافة <= 3.5 Å.")
 
     # 3. تبويب الفرز الافتراضي متعدد الأدوية
     with tab_panel_screen:
         with st.container(border=True):
             st.markdown("#### 💊 الفرز الافتراضي والمقارنة متعددة الأدوية (Multi-Drug Virtual Screening)")
-            st.markdown("مقارنة عدة أدوية سريرية ضد الطفرة في جولة فحص واحدة لتحديد الدواء الأكثر استقراراً والأقل عرضة للمقاومة:")
+            st.markdown("مقارنة عدة أدوية ضد الطفرة في جولة فحص حسابية استكشافية واحدة لحساب فوارق درجات الإرساء:")
             screening_panels = {
                 "EGFR TKI Panel (أدوية سرطان الرئة)": [
                     ("Erlotinib (جيل 1)", "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"),
@@ -1355,79 +1486,131 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             chosen_panel_name = st.selectbox("اختر باقة الفرز الصيدلانية:", list(screening_panels.keys()), key="screen_panel_select")
             chosen_drugs = screening_panels[chosen_panel_name]
 
+            h_active_pdb = st.session_state.get("h_assembly_pdb") or st.session_state.get("h_pdb") or ""
+            m_active_pdb = st.session_state.get("m_assembly_pdb") or st.session_state.get("m_pdb") or ""
+
+            h_coordinate_source = (
+                "biological_assembly_1"
+                if st.session_state.get("h_assembly_pdb")
+                else "deposited_or_uploaded"
+            )
+            m_coordinate_source = (
+                "biological_assembly_1"
+                if st.session_state.get("m_assembly_pdb")
+                else "deposited_or_uploaded"
+            )
+
+            screen_fp_payload = {
+                "workflow": "screening_panel",
+                "healthy_id": st.session_state.get("h_id", ""),
+                "mutant_id": st.session_state.get("m_id", ""),
+                "healthy_coordinate_source": h_coordinate_source,
+                "mutant_coordinate_source": m_coordinate_source,
+                "healthy_coordinate_sha256": compute_text_sha256(h_active_pdb),
+                "mutant_coordinate_sha256": compute_text_sha256(m_active_pdb),
+                "pocket_res": pocket_res,
+                "target_domain": target_domain,
+                "chosen_panel_name": chosen_panel_name,
+                "vina_version": vina_ver,
+            }
+            current_screen_fp = compute_input_fingerprint(screen_fp_payload)
+            prev_screen_fp = st.session_state.get("dock_screen_input_fingerprint")
+            if prev_screen_fp and prev_screen_fp != current_screen_fp:
+                st.session_state.pop("screening_results", None)
+            st.session_state["dock_screen_input_fingerprint"] = current_screen_fp
+
             if st.button("🚀 تشغيل الفرز الافتراضي للباقة (Screen Drug Panel)", key="btn_run_panel_screen", type="primary"):
+                st.session_state.pop("screening_results", None)
                 screen_pocket_list = [r.strip() for r in pocket_res.split(",") if r.strip()]
                 if not screen_pocket_list:
                     st.error("يرجى تحديد أحماض جيب الارتباط أولاً في البطاقة العلوية.")
                 else:
                     progress_bar = st.progress(0.0)
                     screen_results = []
-                    h_p_data = st.session_state.get("h_assembly_pdb") or st.session_state.get("h_pdb")
-                    m_p_data = st.session_state.get("m_assembly_pdb") or st.session_state.get("m_pdb")
                     h_meta_s = {"pdb_id": st.session_state.get("h_id"), "target_domain": target_domain, "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
                     m_meta_s = {"pdb_id": st.session_state.get("m_id"), "target_domain": target_domain, "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 
                     for idx, (d_name, d_smiles) in enumerate(chosen_drugs):
                         try:
+                            drug_fp_payload = {
+                                "workflow": "screening_panel_drug",
+                                "healthy_id": st.session_state.get("h_id", ""),
+                                "mutant_id": st.session_state.get("m_id", ""),
+                                "healthy_coordinate_source": h_coordinate_source,
+                                "mutant_coordinate_source": m_coordinate_source,
+                                "healthy_coordinate_sha256": compute_text_sha256(h_active_pdb),
+                                "mutant_coordinate_sha256": compute_text_sha256(m_active_pdb),
+                                "pocket_res": pocket_res,
+                                "target_domain": target_domain,
+                                "vina_version": vina_ver,
+                                "exhaustiveness": 4,
+                                "drug_name": d_name,
+                                "drug_smiles": d_smiles,
+                            }
+                            drug_input_fp = compute_input_fingerprint(drug_fp_payload)
                             cr = run_matched_docking_comparison(
-                                healthy_pdb_text=h_p_data,
-                                mutant_pdb_text=m_p_data,
+                                healthy_pdb_text=h_active_pdb,
+                                mutant_pdb_text=m_active_pdb,
                                 healthy_target_meta=h_meta_s,
                                 mutant_target_meta=m_meta_s,
                                 ligand_smiles=d_smiles,
                                 ligand_name=d_name,
                                 pocket_residues=screen_pocket_list,
                                 target_domain=target_domain,
-                                exhaustiveness=4
+                                exhaustiveness=4,
+                                input_fingerprint=drug_input_fp,
                             )
                             wt_s = cr['healthy']['dominant_cluster_median']
                             mt_s = cr['mutant']['dominant_cluster_median']
                             delta_s = cr['delta_score']
-                            # Classification
+                            # Neutral non-clinical classification
                             if delta_s >= 1.5:
-                                r_tag = "🔴 مقاومة مرتفعة (Resistant)"
+                                r_tag = "Score increase >= +1.5 kcal/mol"
                             elif delta_s >= 0.6:
-                                r_tag = "🟠 تراجع الفعالية (Moderate)"
+                                r_tag = "Score increase +0.6 to +1.5 kcal/mol"
                             elif delta_s <= -1.5:
-                                r_tag = "🟢 ارتباط انتقائي بالطافر (Highly Effective)"
+                                r_tag = "Score decrease <= -1.5 kcal/mol"
                             else:
-                                r_tag = "⚪ فعالية محفوظة (Neutral)"
+                                r_tag = "Neutral (|ΔScore| < 0.6 kcal/mol)"
 
                             screen_results.append({
                                 "الدواء": d_name,
                                 "السليم (WT) kcal/mol": wt_s,
                                 "المصاب (Mutant) kcal/mol": mt_s,
                                 "فارق الطاقة (ΔScore)": delta_s,
-                                "التقييم السريري": r_tag
+                                "Exploratory score-difference flag": r_tag
                             })
                         except Exception as ex:
                             st.warning(f"تعذر فرز {d_name}: {ex}")
                         progress_bar.progress((idx + 1) / len(chosen_drugs))
 
                     if screen_results:
+                        st.session_state["screening_results"] = screen_results
                         st.success("✅ اكتمل الفرز الافتراضي بنجاح!")
-                        df_screen = pd.DataFrame(screen_results)
-                        st.dataframe(df_screen, use_container_width=True, hide_index=True)
 
-                        # Plotly Grouped Bar Chart
-                        fig_screen = go.Figure()
-                        d_names = [r["الدواء"] for r in screen_results]
-                        wt_vals = [r["السليم (WT) kcal/mol"] for r in screen_results]
-                        mt_vals = [r["المصاب (Mutant) kcal/mol"] for r in screen_results]
+            saved_screen_res = st.session_state.get("screening_results")
+            if saved_screen_res:
+                df_screen = pd.DataFrame(saved_screen_res)
+                st.dataframe(df_screen, use_container_width=True, hide_index=True)
 
-                        fig_screen.add_trace(go.Bar(
-                            x=d_names, y=wt_vals, name="السليم (WT)",
-                            marker_color="#2ea043"
-                        ))
-                        fig_screen.add_trace(go.Bar(
-                            x=d_names, y=mt_vals, name="المصاب (Mutant)",
-                            marker_color="#da3633"
-                        ))
-                        fig_screen.update_layout(
-                            title="مقارنة طاقة الارتباط الحاسوبية عبر باقة الأدوية (kcal/mol - الأقل أفضل)",
-                            barmode="group",
-                            template="plotly_dark",
-                            height=380,
-                            margin=dict(l=20, r=20, t=40, b=20)
-                        )
-                        st.plotly_chart(fig_screen, use_container_width=True)
+                fig_screen = go.Figure()
+                d_names = [r["الدواء"] for r in saved_screen_res]
+                wt_vals = [r["السليم (WT) kcal/mol"] for r in saved_screen_res]
+                mt_vals = [r["المصاب (Mutant) kcal/mol"] for r in saved_screen_res]
+
+                fig_screen.add_trace(go.Bar(
+                    x=d_names, y=wt_vals, name="السليم (WT)",
+                    marker_color="#2ea043"
+                ))
+                fig_screen.add_trace(go.Bar(
+                    x=d_names, y=mt_vals, name="المصاب (Mutant)",
+                    marker_color="#da3633"
+                ))
+                fig_screen.update_layout(
+                    title="مقارنة طاقة الارتباط الحاسوبية عبر باقة الأدوية (kcal/mol - الأقل أفضل)",
+                    barmode="group",
+                    template="plotly_dark",
+                    height=380,
+                    margin=dict(l=20, r=20, t=40, b=20)
+                )
+                st.plotly_chart(fig_screen, use_container_width=True)

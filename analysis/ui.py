@@ -214,11 +214,14 @@ def render_analysis_tab():
             mutant_str = "".join([AA_3TO1.get(r['res_name'], 'X') for r in mutant_sequence])
             
             alignment_text, score, aligned_healthy, aligned_mutant = get_alignment(healthy_str, mutant_str, alignment_mode)
+            aligned_len = len(aligned_healthy)
+            identity_pct = (sum(a == b and a != '-' for a, b in zip(aligned_healthy, aligned_mutant)) / aligned_len * 100) if aligned_len > 0 else 0.0
             alignment_data = {
                 'text': alignment_text, 'score': score, 
                 'aligned_healthy': aligned_healthy, 'aligned_mutant': aligned_mutant,
                 'healthy_seq': healthy_sequence, 'mutant_seq': mutant_sequence,
-                'healthy_str': healthy_str, 'mutant_str': mutant_str
+                'healthy_str': healthy_str, 'mutant_str': mutant_str,
+                'identity_pct': identity_pct
             }
             
             mutations_healthy, mutations_mutant = [], []
@@ -239,8 +242,12 @@ def render_analysis_tab():
                 if char_m != '-':
                     mutant_ptr += 1
                 
-            highlight_map['m'] = mutations_mutant if mutations_mutant else None
-            highlight_map['h'] = mutations_healthy if mutations_healthy else None
+            if identity_pct >= 40.0:
+                highlight_map['m'] = mutations_mutant if mutations_mutant else None
+                highlight_map['h'] = mutations_healthy if mutations_healthy else None
+            else:
+                highlight_map['m'] = None
+                highlight_map['h'] = None
 
     # ── الخطوة 4: العرض التفاعلي ثلاثي الأبعاد والتحليل الرقمي ──
     for p in proteins:
@@ -315,70 +322,85 @@ def render_analysis_tab():
         st.header("📋 مقارنة السلسلة (Comparison)")
         
         if alignment_data:
-            healthy_sasa_map = calculate_sasa_map(structures['h'], h_chain)
-            mutant_sasa_map = calculate_sasa_map(structures['m'], m_chain)
-
-            rows = []
-            healthy_pos, mutant_pos = 0, 0
-            for char_h, char_m in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant']):
-                h_res = alignment_data['healthy_seq'][healthy_pos] if char_h != '-' else None
-                m_res = alignment_data['mutant_seq'][mutant_pos] if char_m != '-' else None
-                
-                h_name = h_res['res_name'] if h_res else '-'
-                m_name = m_res['res_name'] if m_res else '-'
-                h_res_num = h_res['res_num'] if h_res else '-'
-                m_res_num = m_res['res_num'] if m_res else '-'
-                
-                res_num = m_res['res_num'] if m_res else (h_res['res_num'] if h_res else 0)
-                res_num_label = f"H:{h_res_num} | M:{m_res_num}" if (h_res and m_res) else (f"H:{h_res_num}" if h_res else f"M:{m_res_num}")
-                
-                sasa_healthy = healthy_sasa_map.get(h_res['res_num'], 0) if h_res else 0
-                sasa_mutant = mutant_sasa_map.get(m_res['res_num'], 0) if m_res else 0
-                
-                rows.append({
-                    'res_num': res_num,
-                    'res_num_h': h_res_num,
-                    'res_num_m': m_res_num,
-                    'res_num_label': str(res_num),
-                    'السليم': h_name,
-                    'المصاب': m_name,
-                    'SASA_H': sasa_healthy,
-                    'SASA_M': sasa_mutant,
-                    'SASA_Delta': round(sasa_mutant - sasa_healthy, 2),
-                    'الحالة': '🔴 طفرة' if h_name != m_name else '🟢 محافظ',
-                    'Impact': analyze_impact(h_name, m_name, sasa_healthy, sasa_mutant)
-                })
-                
-                if char_h != '-':
-                    healthy_pos += 1
-                if char_m != '-':
-                    mutant_pos += 1
-            
-            comparison_df = pd.DataFrame(rows)
-            
-            with st.expander("جدول المقارنة المتقدم (Structural & Chemical Impact)"):
-                display_df = comparison_df.rename(columns={
-                    'res_num_h': 'رقم السليم',
-                    'res_num_m': 'رقم المصاب',
-                    'SASA_H': 'SASA H',
-                    'SASA_M': 'SASA M',
-                    'SASA_Delta': 'ΔSASA',
-                    'Impact': 'نوع التأثير العلمي'
-                })[['رقم السليم', 'رقم المصاب', 'السليم', 'المصاب', 'SASA H', 'SASA M', 'ΔSASA', 'الحالة', 'نوع التأثير العلمي']]
-                st.dataframe(
-                    display_df.style.apply(
-                        lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r),
-                        axis=1
-                    ),
-                    use_container_width=True,
-                    hide_index=True
+            id_pct = alignment_data.get('identity_pct', 100.0)
+            proceed_with_comparison = True
+            if id_pct < 40.0:
+                st.warning(
+                    f"⚠️ **تحذير: نسبة التطابق التسلسلي منخفضة جداً ({id_pct:.1f}% < 40%).** "
+                    "مقارنة سلاسل غير متجانسة لا تُعد مقارنة دقيقة بين سليم ومصاب لطفرة محددة."
+                )
+                proceed_with_comparison = st.checkbox(
+                    "أؤكد الرغبة في متابعة المقارنة وعرض جدول الطفرات وتأثير SASA رغم تدني نسبة التطابق (< 40%)",
+                    key="confirm_low_id_comparison"
                 )
 
-            # ── رسم بياني لمقارنة SASA المتقدمة ──
-            st.subheader("📊 مقارنة SASA المتقدمة")
-            comparison_df['plot_index'] = range(1, len(comparison_df) + 1)
-            sasa_figure = build_sasa_figure(comparison_df)
-            st.plotly_chart(sasa_figure, use_container_width=True)
+            if not proceed_with_comparison:
+                st.info("تم حجب جدول المقارنة وتأثير الطفرات الهيكلية لحين تأكيد المتابعة أو اختيار سلاسل متطابقة.")
+            else:
+                healthy_sasa_map = calculate_sasa_map(structures['h'], h_chain)
+                mutant_sasa_map = calculate_sasa_map(structures['m'], m_chain)
+
+                rows = []
+                healthy_pos, mutant_pos = 0, 0
+                for char_h, char_m in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant']):
+                    h_res = alignment_data['healthy_seq'][healthy_pos] if char_h != '-' else None
+                    m_res = alignment_data['mutant_seq'][mutant_pos] if char_m != '-' else None
+                    
+                    h_name = h_res['res_name'] if h_res else '-'
+                    m_name = m_res['res_name'] if m_res else '-'
+                    h_res_num = h_res['res_num'] if h_res else '-'
+                    m_res_num = m_res['res_num'] if m_res else '-'
+                    
+                    res_num = m_res['res_num'] if m_res else (h_res['res_num'] if h_res else 0)
+                    res_num_label = f"H:{h_res_num} | M:{m_res_num}" if (h_res and m_res) else (f"H:{h_res_num}" if h_res else f"M:{m_res_num}")
+                    
+                    sasa_healthy = healthy_sasa_map.get(h_res['res_num'], 0) if h_res else 0
+                    sasa_mutant = mutant_sasa_map.get(m_res['res_num'], 0) if m_res else 0
+                    
+                    rows.append({
+                        'res_num': res_num,
+                        'res_num_h': h_res_num,
+                        'res_num_m': m_res_num,
+                        'res_num_label': str(res_num),
+                        'السليم': h_name,
+                        'المصاب': m_name,
+                        'SASA_H': sasa_healthy,
+                        'SASA_M': sasa_mutant,
+                        'SASA_Delta': round(sasa_mutant - sasa_healthy, 2),
+                        'الحالة': '🔴 طفرة' if h_name != m_name else '🟢 محافظ',
+                        'Impact': analyze_impact(h_name, m_name, sasa_healthy, sasa_mutant)
+                    })
+                    
+                    if char_h != '-':
+                        healthy_pos += 1
+                    if char_m != '-':
+                        mutant_pos += 1
+                
+                comparison_df = pd.DataFrame(rows)
+                
+                with st.expander("جدول المقارنة المتقدم (Structural & Chemical Impact)"):
+                    display_df = comparison_df.rename(columns={
+                        'res_num_h': 'رقم السليم',
+                        'res_num_m': 'رقم المصاب',
+                        'SASA_H': 'SASA H',
+                        'SASA_M': 'SASA M',
+                        'SASA_Delta': 'ΔSASA',
+                        'Impact': 'نوع التأثير العلمي'
+                    })[['رقم السليم', 'رقم المصاب', 'السليم', 'المصاب', 'SASA H', 'SASA M', 'ΔSASA', 'الحالة', 'نوع التأثير العلمي']]
+                    st.dataframe(
+                        display_df.style.apply(
+                            lambda r: ['background-color: #3e2723' if r['السليم'] != r['المصاب'] else ''] * len(r),
+                            axis=1
+                        ),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                # ── رسم بياني لمقارنة SASA المتقدمة ──
+                st.subheader("📊 مقارنة SASA المتقدمة")
+                comparison_df['plot_index'] = range(1, len(comparison_df) + 1)
+                sasa_figure = build_sasa_figure(comparison_df)
+                st.plotly_chart(sasa_figure, use_container_width=True)
 
             # ── نتيجة المحاذاة (Alignment) ──
             st.header(f"🧬 المحاذاة التسلسلية (Alignment: {alignment_mode.capitalize()})")

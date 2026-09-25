@@ -1,8 +1,8 @@
 # Docking validation, atom mapping, and RMSD calculations
 import numpy as np
-from openbabel import pybel
 from rdkit import Chem
 from rdkit.Chem import rdFMCS
+from docking.openbabel_io import read_text, write_text
 from docking.models import DockingPose, PoseCluster
 
 def parse_pdbqt_coords(pdbqt_block: str) -> np.ndarray:
@@ -44,17 +44,17 @@ def calculate_mapped_redocking_rmsd(ref_ligand_pdb_text: str, pose_pdbqt_block: 
     # 1. Parse reference ligand into RDKit molecule
     mol_ref = Chem.MolFromPDBBlock(ref_ligand_pdb_text, sanitize=False)
     if mol_ref is None:
-        ob_ref = pybel.readstring("pdb", ref_ligand_pdb_text)
-        mol_ref = Chem.MolFromMolBlock(ob_ref.write("mol"), sanitize=False)
+        ob_ref = read_text(ref_ligand_pdb_text, "pdb")
+        mol_ref = Chem.MolFromMolBlock(write_text(ob_ref, "mol"), sanitize=False)
 
     if mol_ref is None:
         raise ValueError("Could not parse reference ligand coordinates into a chemical molecule.")
 
     # 2. Convert pose PDBQT block into RDKit molecule via OpenBabel to preserve coordinates
-    ob_pose = pybel.readstring("pdbqt", pose_pdbqt_block)
-    mol_pose = Chem.MolFromPDBBlock(ob_pose.write("pdb"), sanitize=False)
+    ob_pose = read_text(pose_pdbqt_block, "pdbqt")
+    mol_pose = Chem.MolFromPDBBlock(write_text(ob_pose, "pdb"), sanitize=False)
     if mol_pose is None:
-        mol_pose = Chem.MolFromMolBlock(ob_pose.write("mol"), sanitize=False)
+        mol_pose = Chem.MolFromMolBlock(write_text(ob_pose, "mol"), sanitize=False)
 
     if mol_pose is None:
         raise ValueError("Could not parse docked pose coordinates into a chemical molecule.")

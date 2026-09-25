@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import AllChem
-from openbabel import pybel
+from docking.openbabel_io import read_file, write_file
 
 def prepare_ligand_from_smiles(smiles: str, ligand_name: str, output_dir: Path, ph: float = 7.4) -> tuple[Path, Path, dict]:
     output_dir = Path(output_dir)
@@ -30,8 +30,8 @@ def prepare_ligand_from_smiles(smiles: str, ligand_name: str, output_dir: Path, 
     writer.close()
 
     pdbqt_path = output_dir / f"{ligand_name}.pdbqt"
-    ob_mol = next(pybel.readfile("sdf", str(sdf_path.resolve())))
-    ob_mol.write("pdbqt", str(pdbqt_path.resolve()), overwrite=True)
+    ob_mol = read_file(sdf_path, "sdf")
+    write_file(ob_mol, pdbqt_path, "pdbqt")
 
     num_rotatable_bonds = AllChem.CalcNumRotatableBonds(mol)
 

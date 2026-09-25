@@ -1,1 +1,1 @@
-# Docking package
+"""Bio-Impact Analyzer docking package."""

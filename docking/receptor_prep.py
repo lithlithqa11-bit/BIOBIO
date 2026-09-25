@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from io import StringIO
 from Bio.PDB import PDBParser, PDBIO
-from openbabel import pybel
+from docking.openbabel_io import read_file, write_file
 
 def prepare_receptor(
     pdb_string: str,
@@ -70,9 +70,9 @@ def prepare_receptor(
 
     # 4. Convert to standard rigid PDBQT
     clean_pdbqt_path = output_dir / "receptor.pdbqt"
-    mol = next(pybel.readfile("pdb", str(clean_pdb_path.resolve())))
-    mol.OBMol.AddHydrogens(False, True)
-    mol.write("pdbqt", str(clean_pdbqt_path.resolve()), overwrite=True, opt={"r": None})
+    mol = read_file(clean_pdb_path, "pdb")
+    mol.AddHydrogens(False, True)
+    write_file(mol, clean_pdbqt_path, "pdbqt", rigid_receptor=True)
 
     # 5. Sanitize rigid receptor PDBQT to strictly remove ROOT/BRANCH/TORSDOF tags
     lines = []

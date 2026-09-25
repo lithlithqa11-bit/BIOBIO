@@ -46,31 +46,32 @@ def validate_matched_conditions(
         return False, f"Search exhaustiveness mismatch: {healthy_exhaustiveness} != {mutant_exhaustiveness}."
     return True, "Matched comparison conditions satisfied."
 
-def verify_comparison_clusters(h_clusters: list[PoseCluster], m_clusters: list[PoseCluster]) -> tuple[float, list[str]]:
-    """
-    Verify that both healthy and mutant receptors produced a dominant pose cluster.
-    Returns (delta_score, warnings).
-    Raises ValueError only if no clusters exist at all.
-    Issues a warning (instead of rejecting) if seed support is below 2.
-    """
-    h_top_cluster = h_clusters[0] if h_clusters else None
-    m_top_cluster = m_clusters[0] if m_clusters else None
-    warnings = []
+def _select_consensus_cluster(clusters: list[PoseCluster]) -> PoseCluster:
+    if not clusters:
+        raise ValueError("Matched comparison rejected: no pose clusters were produced.")
+    # Prefer reproducibility first, then a lower median Vina score.
+    return sorted(
+        clusters,
+        key=lambda cluster: (-cluster.seed_count, cluster.median_score, cluster.top_score),
+    )[0]
 
-    if h_top_cluster is None or m_top_cluster is None:
+
+def verify_comparison_clusters(
+    h_clusters: list[PoseCluster],
+    m_clusters: list[PoseCluster],
+) -> tuple[PoseCluster, PoseCluster, float, list[str]]:
+    healthy_cluster = _select_consensus_cluster(h_clusters)
+    mutant_cluster = _select_consensus_cluster(m_clusters)
+
+    if healthy_cluster.seed_count < 2 or mutant_cluster.seed_count < 2:
         raise ValueError(
-            "Matched comparison rejected: no dominant pose cluster was produced for one or both receptors."
+            "Matched comparison rejected: the selected consensus pose must be supported "
+            "by at least two independent seeds for both receptors. "
+            f"healthy={healthy_cluster.seed_count}, mutant={mutant_cluster.seed_count}."
         )
 
-    if h_top_cluster.seed_count < 2 or m_top_cluster.seed_count < 2:
-        warnings.append(
-            "⚠️ Reproducibility warning: the dominant pose was not reproduced by at least two independent seeds "
-            f"(healthy seeds={h_top_cluster.seed_count}, mutant seeds={m_top_cluster.seed_count}). "
-            "Results should be interpreted with caution."
-        )
-
-    delta = round(m_top_cluster.median_score - h_top_cluster.median_score, 3)
-    return delta, warnings
+    delta_score = round(mutant_cluster.median_score - healthy_cluster.median_score, 3)
+    return healthy_cluster, mutant_cluster, delta_score, []
 
 def run_matched_docking_comparison(
     healthy_pdb_text: str,
@@ -83,7 +84,8 @@ def run_matched_docking_comparison(
     target_domain: str = "Kinase Domain",
     padding: float = 8.0,
     seeds: list[int] | None = None,
-    exhaustiveness: int = 8
+    exhaustiveness: int = 8,
+    input_fingerprint: str | None = None,
 ) -> dict:
     """
     Execute controlled matched docking comparison between healthy and mutant structures.
@@ -113,27 +115,22 @@ def run_matched_docking_comparison(
     with open(m_run_dir / "receptor_source.pdb", "w", encoding="utf-8") as f:
         f.write(mutant_pdb_text)
 
-    # 2. Compute individual pocket grids, then build a unified grid
-    #    (WT and mutant conformations differ, so grids will differ;
-    #     a unified grid with max dimensions ensures fair comparison)
-    h_grid_raw = define_grid_from_residues(healthy_pdb_text, pocket_residues, padding=padding)
-    m_grid_raw = define_grid_from_residues(mutant_pdb_text, pocket_residues, padding=padding)
+    # 2. Compute individual pocket grids, then record metadata for each receptor
+    # Each PDB structure has its own coordinate frame. Use the same validated
+    # residue definition and padding, but calculate one grid in each receptor's
+    # own coordinates. Never average Cartesian coordinates of unaligned PDB files.
+    h_grid = define_grid_from_residues(healthy_pdb_text, pocket_residues, padding=padding)
+    m_grid = define_grid_from_residues(mutant_pdb_text, pocket_residues, padding=padding)
 
-    unified_center_x = round((h_grid_raw.center_x + m_grid_raw.center_x) / 2, 3)
-    unified_center_y = round((h_grid_raw.center_y + m_grid_raw.center_y) / 2, 3)
-    unified_center_z = round((h_grid_raw.center_z + m_grid_raw.center_z) / 2, 3)
-    unified_size_x = round(max(h_grid_raw.size_x, m_grid_raw.size_x), 1)
-    unified_size_y = round(max(h_grid_raw.size_y, m_grid_raw.size_y), 1)
-    unified_size_z = round(max(h_grid_raw.size_z, m_grid_raw.size_z), 1)
+    grid_meta_healthy = {
+        "center": [h_grid.center_x, h_grid.center_y, h_grid.center_z],
+        "size": [h_grid.size_x, h_grid.size_y, h_grid.size_z],
+    }
+    grid_meta_mutant = {
+        "center": [m_grid.center_x, m_grid.center_y, m_grid.center_z],
+        "size": [m_grid.size_x, m_grid.size_y, m_grid.size_z],
+    }
 
-    unified_grid = GridBox(
-        center_x=unified_center_x, center_y=unified_center_y, center_z=unified_center_z,
-        size_x=unified_size_x, size_y=unified_size_y, size_z=unified_size_z
-    )
-    h_grid = unified_grid
-    m_grid = unified_grid
-
-    grid_meta_unified = {"center": [unified_center_x, unified_center_y, unified_center_z], "size": [unified_size_x, unified_size_y, unified_size_z]}
     engine_meta = {"name": "AutoDock Vina", "version": vina_ver, "seeds": seeds, "exhaustiveness": exhaustiveness, "num_modes": 9, "energy_range": 3.0}
     binding_site_meta = {"method": "residues", "residues": pocket_residues, "padding": padding}
 
@@ -146,7 +143,7 @@ def run_matched_docking_comparison(
         "target": healthy_target_meta,
         "binding_site": binding_site_meta,
         "ligand": {"name": ligand_name, "input_smiles": ligand_smiles},
-        "grid": grid_meta_unified,
+        "grid": grid_meta_healthy,
         "engine": engine_meta
     }
     write_initial_manifest(h_run_dir, h_initial)
@@ -159,7 +156,7 @@ def run_matched_docking_comparison(
         "target": mutant_target_meta,
         "binding_site": binding_site_meta,
         "ligand": {"name": ligand_name, "input_smiles": ligand_smiles},
-        "grid": grid_meta_unified,
+        "grid": grid_meta_mutant,
         "engine": engine_meta
     }
     write_initial_manifest(m_run_dir, m_initial)
@@ -190,9 +187,10 @@ def run_matched_docking_comparison(
             ligand_meta={"name": ligand_name, "input_smiles": ligand_smiles},
             prep_meta={},
             engine_meta=engine_meta,
-            grid_meta=grid_meta_unified,
+            grid_meta=grid_meta_healthy,
             results_meta={"clusters": _serialize_clusters(h_cl), "per_seed": h_meta or [], "failure_reason": err_msg},
-            warnings=[err_msg]
+            warnings=[err_msg],
+            input_fingerprint=input_fingerprint,
         )
         build_and_save_manifest(
             run_dir=m_run_dir,
@@ -203,9 +201,10 @@ def run_matched_docking_comparison(
             ligand_meta={"name": ligand_name, "input_smiles": ligand_smiles},
             prep_meta={},
             engine_meta=engine_meta,
-            grid_meta=grid_meta_unified,
+            grid_meta=grid_meta_mutant,
             results_meta={"clusters": _serialize_clusters(m_cl), "per_seed": m_meta or [], "failure_reason": err_msg},
-            warnings=[err_msg]
+            warnings=[err_msg],
+            input_fingerprint=input_fingerprint,
         )
 
     # 4. Receptor preparation with identical policy
@@ -227,7 +226,7 @@ def run_matched_docking_comparison(
     h_lig_hash = compute_file_sha256(h_lig_pdbqt)
     m_lig_hash = compute_file_sha256(m_lig_pdbqt)
 
-    # 6. Verify matched conditions (grid is already unified, no size check needed)
+    # 6. Verify matched conditions
     valid, reason = validate_matched_conditions(
         healthy_domain=target_domain,
         mutant_domain=target_domain,
@@ -255,7 +254,7 @@ def run_matched_docking_comparison(
             seeds=seeds,
             exhaustiveness=exhaustiveness
         )
-        h_clusters = cluster_poses_across_seeds(h_poses, rmsd_threshold=3.0)
+        h_clusters = cluster_poses_across_seeds(h_poses, rmsd_threshold=2.0)
     except Exception as e:
         _finalize_both_failed(f"Healthy docking engine failure: {e}")
         raise
@@ -270,20 +269,19 @@ def run_matched_docking_comparison(
             seeds=seeds,
             exhaustiveness=exhaustiveness
         )
-        m_clusters = cluster_poses_across_seeds(m_poses, rmsd_threshold=3.0)
+        m_clusters = cluster_poses_across_seeds(m_poses, rmsd_threshold=2.0)
     except Exception as e:
         _finalize_both_failed(f"Mutant docking engine failure: {e}", h_meta=h_meta, h_cl=h_clusters)
         raise
 
     # 9. Reproducibility check before calculating delta_score
     try:
-        delta_score, reprod_warnings = verify_comparison_clusters(h_clusters, m_clusters)
+        h_top_cluster, m_top_cluster, delta_score, reprod_warnings = verify_comparison_clusters(
+            h_clusters, m_clusters
+        )
     except ValueError as val_err:
         _finalize_both_failed(str(val_err), h_meta=h_meta, m_meta=m_meta, h_cl=h_clusters, m_cl=m_clusters)
         raise
-
-    h_top_cluster = h_clusters[0]
-    m_top_cluster = m_clusters[0]
 
     # 10. Save successful manifests for both runs
     build_and_save_manifest(
@@ -295,7 +293,7 @@ def run_matched_docking_comparison(
         ligand_meta=h_lig_rep,
         prep_meta=h_prep_rep,
         engine_meta=engine_meta,
-        grid_meta=grid_meta_unified,
+        grid_meta=grid_meta_healthy,
         results_meta={
             "top_score": min(p.score for p in h_poses),
             "clusters_count": len(h_clusters),
@@ -312,7 +310,8 @@ def run_matched_docking_comparison(
             ],
             "per_seed": h_meta
         },
-        warnings=[]
+        warnings=[],
+        input_fingerprint=input_fingerprint,
     )
     build_and_save_manifest(
         run_dir=m_run_dir,
@@ -323,7 +322,7 @@ def run_matched_docking_comparison(
         ligand_meta=m_lig_rep,
         prep_meta=m_prep_rep,
         engine_meta=engine_meta,
-        grid_meta=grid_meta_unified,
+        grid_meta=grid_meta_mutant,
         results_meta={
             "top_score": min(p.score for p in m_poses),
             "clusters_count": len(m_clusters),
@@ -340,7 +339,8 @@ def run_matched_docking_comparison(
             ],
             "per_seed": m_meta
         },
-        warnings=[]
+        warnings=[],
+        input_fingerprint=input_fingerprint,
     )
 
     return {
