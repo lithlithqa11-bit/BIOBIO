@@ -13,7 +13,7 @@
 ## 🏗️ هيكلية المشروع (Project Architecture)
 
 ```
-Bio-main/
+BIOBIO/
 │
 ├── app.py                       # نقطة الانطلاق الرئيسية للتطبيق (Streamlit)
 │
@@ -33,6 +33,7 @@ Bio-main/
 │   ├── binding_site.py          # حساب صندوق الجيب (Grid Box)
 │   ├── receptor_prep.py         # تهيئة وتجهيز البروتين المستقبل
 │   ├── ligand_prep.py           # تهيئة الليجاند وتحويل SMILES إلى PDBQT
+│   ├── openbabel_io.py          # معالجة آمنة لملفات وتنسيقات OpenBabel
 │   ├── comparison.py            # المقارنة المزدوجة بين السليم والمصاب
 │   ├── interactions.py          # رصد الروابط الهيدروجينية ومسافات التلامس
 │   ├── presets.py               # مكتبة الحالات السريرية البشرية
@@ -47,7 +48,12 @@ Bio-main/
 │
 ├── tools/                       # الأدوات التنفيذية
 │   └── vina/
-│       └── vina.exe             # محرك AutoDock Vina
+│       ├── vina                 # محرك AutoDock Vina (Linux)
+│       └── vina.exe             # محرك AutoDock Vina (Windows)
+│
+├── tests/                       # حزمة الاختبارات الآلية والتحقق العلمي
+│   ├── __init__.py
+│   └── test_repairs.py          # اختبارات الوحدة الشاملة (26 اختباراً)
 │
 ├── docking_runs/                # مجلد حفظ مخرجات عمليات الإرساء
 │   └── .gitkeep
@@ -73,7 +79,13 @@ streamlit run app.py
 ---
 
 ## 🧪 التحقق والاختبار (Verification)
-لاختبار سلامة كافة موديولات وحزم المشروع:
+
+### 1. اختبار استيراد الوحدات الأساسية:
 ```bash
 python -c "import analysis; import docking; print('All modules loaded successfully!')"
+```
+
+### 2. تشغيل حزمة الاختبارات الآلية (26 اختباراً علمياً وهيكلياً):
+```bash
+python -m unittest discover tests
 ```
