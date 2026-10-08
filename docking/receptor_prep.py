@@ -5,6 +5,32 @@ from io import StringIO
 from Bio.PDB import PDBParser, PDBIO
 from docking.openbabel_io import read_file, write_file
 
+def _format_pdb_element_columns(pdb_path: Path) -> None:
+    """
+    Standardize ATOM and HETATM records to strictly adhere to PDB format specifications:
+    columns 77-78 (1-indexed) must contain the element symbol right-justified.
+    BioPython PDBIO writes the element shifted by 1 column (columns 76-77, left-justified),
+    which causes OpenBabel to fail element parsing and misidentify atom names like CMA as Curium (Cm).
+    """
+    formatted_lines = []
+    with open(pdb_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith(("ATOM  ", "HETATM")):
+                line_str = line.rstrip("\r\n")
+                atom_name = line_str[12:16].strip() if len(line_str) >= 16 else ""
+                raw_elem = line_str[75:].strip() if len(line_str) >= 76 else ""
+                if not raw_elem and atom_name:
+                    alpha = atom_name.lstrip("0123456789")
+                    raw_elem = alpha[:2] if len(alpha) >= 2 and alpha[:2].upper() in ("FE", "MG", "ZN", "CA", "MN", "CL", "BR") else (alpha[0] if alpha else "C")
+                prefix = line_str[:76].ljust(76)
+                elem_rjust = raw_elem.upper().rjust(2)
+                formatted_lines.append(f"{prefix}{elem_rjust}\n")
+            else:
+                formatted_lines.append(line)
+    with open(pdb_path, "w", encoding="utf-8") as f:
+        f.writelines(formatted_lines)
+
+
 def prepare_receptor(
     pdb_string: str,
     output_dir: Path,
@@ -67,6 +93,7 @@ def prepare_receptor(
     io = PDBIO()
     io.set_structure(struct)
     io.save(str(clean_pdb_path.resolve()))
+    _format_pdb_element_columns(clean_pdb_path)
 
     # 4. Convert to standard rigid PDBQT
     clean_pdbqt_path = output_dir / "receptor.pdbqt"
@@ -75,13 +102,18 @@ def prepare_receptor(
     write_file(mol, clean_pdbqt_path, "pdbqt", rigid_receptor=True)
 
     # 5. Sanitize rigid receptor PDBQT to strictly remove ROOT/BRANCH/TORSDOF tags
+    # and ensure no unsupported AutoDock atom types (e.g. Cm from heme CMA) remain
     lines = []
     with open(clean_pdbqt_path, "r", encoding="utf-8") as f:
         for line in f:
-            if not (line.startswith("ROOT") or line.startswith("ENDROOT") or
-                    line.startswith("BRANCH") or line.startswith("ENDBRANCH") or
-                    line.startswith("TORSDOF")):
-                lines.append(line)
+            if line.startswith(("ROOT", "ENDROOT", "BRANCH", "ENDBRANCH", "TORSDOF")):
+                continue
+            if line.startswith(("ATOM  ", "HETATM")):
+                if len(line) >= 79 and line[77:79] == "Cm":
+                    line = line[:77] + " C" + line[79:]
+                elif line.rstrip().endswith(" Cm"):
+                    line = line.rstrip()[:-3] + "  C\n"
+            lines.append(line)
     with open(clean_pdbqt_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 

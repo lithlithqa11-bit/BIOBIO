@@ -33,6 +33,19 @@ def prepare_ligand_from_smiles(smiles: str, ligand_name: str, output_dir: Path, 
     ob_mol = read_file(sdf_path, "sdf")
     write_file(ob_mol, pdbqt_path, "pdbqt")
 
+    # Sanitize ligand PDBQT for any accidental invalid AutoDock atom types (e.g. Cm -> C)
+    lines = []
+    with open(pdbqt_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith(("ATOM  ", "HETATM")):
+                if len(line) >= 79 and line[77:79] == "Cm":
+                    line = line[:77] + " C" + line[79:]
+                elif line.rstrip().endswith(" Cm"):
+                    line = line.rstrip()[:-3] + "  C\n"
+            lines.append(line)
+    with open(pdbqt_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
     num_rotatable_bonds = AllChem.CalcNumRotatableBonds(mol)
 
     report = {

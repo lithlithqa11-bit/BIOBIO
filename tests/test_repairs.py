@@ -508,6 +508,26 @@ class TestRemainingRepairsRegression(unittest.TestCase):
         at.run(timeout=30)
         self.assertFalse(at.exception, [str(x.value) for x in at.exception])
 
+    def test_heme_cma_does_not_produce_curium_cm_atom_type(self):
+        """Ensure atoms named CMA/CMB (e.g. in HEM cofactors) do not get misparsed as Curium (Cm)."""
+        pdb_sample = (
+            "ATOM      1  N   ALA A   1      20.000  20.000  20.000  1.00 20.00           N\n"
+            "ATOM      2  CA  ALA A   1      21.000  20.000  20.000  1.00 20.00           C\n"
+            "HETATM 1078  CMA HEM A 142      22.338  21.946  21.537  1.00 23.27           C\n"
+            "HETATM 1079  CAA HEM A 142      23.000  22.000  22.000  1.00 23.27           C\n"
+        )
+        temp_dir = Path(tempfile.mkdtemp(prefix="test_heme_cm_"))
+        try:
+            clean_pdb, rec_pdbqt, rep = prepare_receptor(pdb_sample, temp_dir)
+            with open(rec_pdbqt, "r", encoding="utf-8") as f:
+                content = f.read()
+            for line in content.splitlines():
+                if line.startswith(("ATOM", "HETATM")):
+                    atom_type = line[77:79].strip()
+                    self.assertNotEqual(atom_type, "Cm", f"Found invalid AutoDock type Cm in: {line}")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

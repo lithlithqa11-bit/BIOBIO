@@ -32,10 +32,10 @@ def render_protein_3d(pdb_string, bg_color='#111', style_type='cartoon',
     else:
         view.setStyle({'hetflag': True}, {})
 
-    # إظهار السطح الخارجي للبروتين
+    # إظهار السطح الخارجي للبروتين (تطبيقه فقط على بقايا البروتين وليس الربائط لمنع اختفاء السطح)
     if show_surface:
         surf_kind = py3Dmol.MS if surface_type == 'MS' else (py3Dmol.VDW if surface_type == 'VDW' else py3Dmol.SAS)
-        view.addSurface(surf_kind, {'opacity': surface_opacity, 'color': '#FFC107'}, {'model': -1})
+        view.addSurface(surf_kind, {'opacity': surface_opacity, 'color': '#FFC107'}, {'hetflag': False})
 
     # تلوين وتمييز أماكن الطفرات (دمج الأنماط في قاموس واحد لمنع الكتابة الفوقية)
     if mutations:

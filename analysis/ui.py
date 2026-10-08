@@ -97,24 +97,30 @@ def render_analysis_tab():
     # ── إعدادات الشريط الجانبي (Sidebar) ──
     st.sidebar.header("⚙️ التحليل والإعدادات")
     with st.sidebar.expander("🎨 خيارات العرض", expanded=True):
-        search_radius = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0)
-        view_style = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"])
-        show_ligands = st.checkbox("إظهار الليجاند (Show Ligand)", value=True)
+        search_radius = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0, key="analysis_search_radius")
+        view_style = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"], key="analysis_view_style")
+        show_ligands = st.checkbox("💊 إظهار الليجاند (Show Ligand)", value=True, key="analysis_show_ligands")
         if show_ligands:
             ligand_style = st.selectbox(
                 "نمط تمثيل الليجاند (Ligand Style):",
                 ["أعواد ملونة مع كرات (Sticks & Spheres)", "أعواد فقط (Sticks Only)", "كرات فضاء (Spheres)"],
-                index=0
+                index=0,
+                key="analysis_ligand_style"
             )
         else:
             ligand_style = "إخفاء"
-        show_surface = st.checkbox("إظهار السطح (Surface)", value=False)
-        surface_type = st.selectbox(
-            "نوع السطح الجزيئي:",
-            ["MS (Molecular Surface)", "SAS (Solvent Accessible)", "VDW (Van der Waals)"],
-            index=0
-        )
-        surface_opacity = st.slider("شفافية السطح", 0.0, 1.0, 0.3)
+        show_surface = st.checkbox("🌐 إظهار السطح (Surface)", value=False, key="analysis_show_surface")
+        if show_surface:
+            surface_type = st.selectbox(
+                "نوع السطح الجزيئي:",
+                ["MS (Molecular Surface)", "SAS (Solvent Accessible)", "VDW (Van der Waals)"],
+                index=0,
+                key="analysis_surface_type"
+            )
+            surface_opacity = st.slider("شفافية السطح", 0.0, 1.0, 0.3, key="analysis_surface_opacity")
+        else:
+            surface_type = "MS"
+            surface_opacity = 0.3
     
     with st.sidebar.expander("🧬 خيارات نمط الإحداثيات والتجمع الحيوي", expanded=True):
         assembly_mode_display = st.radio(
