@@ -191,3 +191,53 @@ def define_grid_from_residues(pdb_string: str, residue_specs: list[str], padding
         size_y=round(float(sizes[1]), 1),
         size_z=round(float(sizes[2]), 1)
     )
+
+
+def define_grid_whole_protein(
+    pdb_string: str,
+    padding: float = 6.0,
+    chain_id: str | None = None,
+) -> GridBox:
+    """Define a 3D docking search box enclosing the entire receptor (Blind Docking).
+
+    Calculates the geometric center and maximum dimensions of all standard protein residues
+    (or a specific chain if provided) with an optional padding buffer.
+    """
+    if not pdb_string or not pdb_string.strip():
+        raise ValueError("No receptor coordinates provided for whole-protein grid definition.")
+
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("target", StringIO(pdb_string))
+    model = structure[0]
+
+    coordinates = []
+    for chain in model:
+        if chain_id is not None and chain.id != chain_id:
+            continue
+        for residue in chain:
+            # Standard protein residues have blank hetflag ' '
+            if residue.id[0] == ' ':
+                coordinates.extend(atom.get_coord() for atom in residue.get_atoms())
+
+    # Fallback to all atoms if no standard residues matched
+    if not coordinates:
+        for atom in model.get_atoms():
+            coordinates.append(atom.get_coord())
+
+    coords_arr = np.asarray(coordinates, dtype=np.float32)
+    if coords_arr.size == 0:
+        raise ValueError("Could not extract any atom coordinates for whole-protein docking.")
+
+    center = coords_arr.mean(axis=0)
+    ranges = coords_arr.max(axis=0) - coords_arr.min(axis=0)
+    sizes = np.maximum(ranges + 2 * padding, 20.0)
+
+    return GridBox(
+        center_x=round(float(center[0]), 3),
+        center_y=round(float(center[1]), 3),
+        center_z=round(float(center[2]), 3),
+        size_x=round(float(sizes[0]), 1),
+        size_y=round(float(sizes[1]), 1),
+        size_z=round(float(sizes[2]), 1),
+    )
+

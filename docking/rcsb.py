@@ -30,3 +30,22 @@ def fetch_biological_assembly_text(pdb_id: str, assembly_id: int = 1, timeout: i
         return gzip.decompress(response.content).decode("utf-8")
     except Exception:
         return None
+
+
+def fetch_chem_comp_smiles(comp_id: str, timeout: int = 15) -> str | None:
+    """Download verified reference SMILES for a Chemical Component ID from RCSB."""
+    comp_id = (comp_id or "").strip().upper()
+    if not comp_id:
+        return None
+    url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{comp_id}"
+    try:
+        response = requests.get(url, timeout=timeout)
+        if response.status_code == 200:
+            data = response.json()
+            descriptor = data.get("rcsb_chem_comp_descriptor") or {}
+            smiles = descriptor.get("SMILES_stereo") or descriptor.get("SMILES")
+            if smiles:
+                return str(smiles).strip()
+        return None
+    except Exception:
+        return None

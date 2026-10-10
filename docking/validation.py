@@ -2,8 +2,59 @@
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdFMCS
+from rdkit.Chem.rdMolDescriptors import CalcMolFormula
 from docking.openbabel_io import read_text, write_text
 from docking.models import DockingPose, PoseCluster
+
+
+def verify_reference_ligand_identity(
+    reference_smiles: str,
+    submitted_smiles: str,
+) -> tuple[bool, str, dict]:
+    """Strictly verify that the submitted ligand is chemically identical to the WT reference ligand.
+
+    Standardizes both molecules and checks:
+    1. canonical isomeric SMILES match
+    2. heavy atom count match
+    3. Hill system molecular formula match
+    """
+    if not (reference_smiles or "").strip() or not (submitted_smiles or "").strip():
+        return False, "Missing reference or submitted SMILES for identity gate.", {}
+
+    mol_ref = Chem.MolFromSmiles(reference_smiles.strip())
+    mol_sub = Chem.MolFromSmiles(submitted_smiles.strip())
+
+    if mol_ref is None or mol_sub is None:
+        return False, "Failed to parse reference or submitted SMILES with RDKit.", {}
+
+    # Documented standardization: canonical isomeric SMILES with explicit stereo and aromaticity
+    ref_can = Chem.MolToSmiles(mol_ref, isomericSmiles=True, canonical=True)
+    sub_can = Chem.MolToSmiles(mol_sub, isomericSmiles=True, canonical=True)
+
+    ref_heavy = mol_ref.GetNumHeavyAtoms()
+    sub_heavy = mol_sub.GetNumHeavyAtoms()
+
+    ref_formula = CalcMolFormula(mol_ref)
+    sub_formula = CalcMolFormula(mol_sub)
+
+    details = {
+        "reference_canonical_smiles": ref_can,
+        "submitted_canonical_smiles": sub_can,
+        "reference_heavy_atom_count": ref_heavy,
+        "submitted_heavy_atom_count": sub_heavy,
+        "reference_molecular_formula": ref_formula,
+        "submitted_molecular_formula": sub_formula,
+    }
+
+    if ref_can != sub_can:
+        return False, f"Canonical isomeric SMILES mismatch: '{ref_can}' != '{sub_can}'.", details
+    if ref_heavy != sub_heavy:
+        return False, f"Heavy atom count mismatch: {ref_heavy} != {sub_heavy}.", details
+    if ref_formula != sub_formula:
+        return False, f"Molecular formula mismatch: '{ref_formula}' != '{sub_formula}'.", details
+
+    return True, "Chemical identity verified.", details
+
 
 def parse_pdbqt_coords(pdbqt_block: str) -> np.ndarray:
     """Extract coordinates of heavy atoms from a PDBQT block."""
@@ -68,14 +119,17 @@ def calculate_mapped_redocking_rmsd(ref_ligand_pdb_text: str, pose_pdbqt_block: 
             f"docked ligand has {pose_heavy_count} heavy atoms. Molecules must match exactly."
         )
 
-    # 3. Establish documented atom mapping via MCS
+    Chem.FastFindRings(mol_ref)
+    Chem.FastFindRings(mol_pose)
+
+    # 3. Establish documented atom mapping via chemically strict MCS
     mcs = rdFMCS.FindMCS(
         [mol_ref, mol_pose],
         atomCompare=rdFMCS.AtomCompare.CompareElements,
-        bondCompare=rdFMCS.BondCompare.CompareAny,
-        matchValences=False,
-        ringMatchesRingOnly=False,
-        completeRingsOnly=False
+        bondCompare=rdFMCS.BondCompare.CompareOrderExact,
+        ringMatchesRingOnly=True,
+        completeRingsOnly=True,
+        matchValences=True,
     )
 
     if mcs.numAtoms != ref_heavy_count:
@@ -212,6 +266,9 @@ def validate_redocking_top_n(
 
     return {
         "top_n": min(top_n, len(ranked)),
+        "rmsd_cutoff": rmsd_cutoff,
+        "min_seed_support": min_seed_support,
+        "method": "symmetry-aware heavy-atom mapped RMSD (no-fit)",
         "top1": {
             "seed": top_pose.seed,
             "rank": top_pose.rank,

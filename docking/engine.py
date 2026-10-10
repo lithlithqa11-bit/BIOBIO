@@ -127,11 +127,13 @@ def run_vina_multi_seeds(
     ligand_pdbqt: Path,
     grid: GridBox,
     output_dir: Path,
-    seeds: list[int] = [42, 101, 2024],
+    seeds: list[int] | None = None,
     exhaustiveness: int = 8,
     num_modes: int = 9,
     energy_range: float = 3.0
 ) -> tuple[list[DockingPose], list[dict]]:
+    if seeds is None:
+        seeds = [42, 101, 2024]
     all_poses: list[DockingPose] = []
     runs_meta: list[dict] = []
 

@@ -1,4 +1,5 @@
 # Streamlit User Interface for Structural Analysis and Mutation Comparison
+import hashlib
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -31,12 +32,44 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = val
 
+def invalidate_dependent_results(reason: str) -> None:
+    """Clear displayed/in-memory protein-derived results, never saved run folders."""
+    keys = {
+        "h_results", "m_results", "h_selected_chain", "m_selected_chain",
+        "last_coordinate_mode",
+        "current_docking_result", "dock_single_input_fingerprint",
+        "matched_comparison_result", "dock_comp_input_fingerprint",
+        "exploratory_cross_result",
+        "screening_results", "dock_screen_input_fingerprint",
+        "comp_h_chain_sel", "comp_m_chain_sel",
+        "cross_r1_chain_sel", "cross_r2_chain_sel",
+        "comp_pocket_input", "comp_pocket_val",
+        "comp_override_m_pocket_input", "comp_override_reason_input",
+        "cross_r1_pocket_input", "cross_r2_pocket_input",
+        "chk_comp_override_pocket",
+        "comp_ref_lig_resname", "comp_ref_lig_chain", "comp_ref_lig_seq",
+    }
+    for key in keys:
+        st.session_state.pop(key, None)
+    st.session_state["last_result_invalidation_reason"] = reason
+
+def clear_protein(prefix: str, label: str) -> None:
+    for key in {
+        f"{prefix}_pdb", f"{prefix}_assembly_pdb", f"{prefix}_id",
+        f"{prefix}_id_in_val", f"{prefix}_id_widget",
+        f"{prefix}_upload_sha256", f"{prefix}_selected_chain",
+        f"{prefix}_results",
+    }:
+        st.session_state.pop(key, None)
+    invalidate_dependent_results(f"{label} protein was cleared by the user.")
+
 def reset_protein_state(prefix: str, preserve_keys: list = None):
     """تنظيف متغيرات الحالة القديمة لبروتين محدد لبدء تحليل جديد ونظيف ومنع تضارب البيانات."""
     preserve = set(preserve_keys or [])
     default_preserved = {
         f"{prefix}_pdb", f"{prefix}_assembly_pdb", f"{prefix}_id",
-        f"{prefix}_src", f"{prefix}_id_in_val", f"{prefix}_id_widget", f"{prefix}_up"
+        f"{prefix}_src", f"{prefix}_id_in_val", f"{prefix}_id_widget", f"{prefix}_up",
+        f"{prefix}_upload_sha256",
     }
     keep = preserve.union(default_preserved)
     for k in list(st.session_state.keys()):
@@ -58,69 +91,90 @@ def protein_ui_panel(p):
             ).strip().upper()
             st.session_state[f"{p['prefix']}_id_in_val"] = pdb_input
 
-            if st.button(f"تحميل {p['label']}", key=f"btn_{p['prefix']}"):
-                with st.spinner('جاري التحميل...'):
-                    # ميزة الذكاء: إذا تم تحميل البروتين المصاب، يتم جلب السليم المقابل له تلقائياً
-                    if p['prefix'] == 'm':
-                        mdb = load_mutation_db()
-                        if pdb_input in mdb:
-                            h_id = mdb[pdb_input]
-                            st.session_state['h_id_in_val'] = h_id
-                            st.session_state['h_id_widget'] = h_id
-                            h_data = fetch_deposited_pdb(h_id)
-                            if h_data:
-                                st.session_state["h_pdb"] = h_data
-                                st.session_state["h_assembly_pdb"] = fetch_biological_assembly(h_id, assembly_id=1)
-                                st.session_state["h_id"] = h_id
-                                reset_protein_state('h')
-                                st.info(f"✅ تم تحميل البروتين السليم تلقائياً: {h_id}")
-                    deposited_data = fetch_deposited_pdb(pdb_input)
-                    assembly_data = fetch_biological_assembly(pdb_input, assembly_id=1)
-                    if deposited_data:
-                        st.session_state[f"{p['prefix']}_pdb"] = deposited_data
-                        st.session_state[f"{p['prefix']}_assembly_pdb"] = assembly_data
-                        st.session_state[f"{p['prefix']}_id"] = pdb_input
-                        reset_protein_state(p['prefix'])
-                        st.rerun()
-                    else:
-                        st.error(f"لم يتم العثور على البروتين بالكود: {pdb_input}")
+            col_btn1, col_btn2 = st.columns([1.5, 1.0])
+            with col_btn1:
+                if st.button(f"تحميل {p['label']}", key=f"btn_{p['prefix']}", use_container_width=True):
+                    with st.spinner('جاري التحميل...'):
+                        # ميزة الذكاء: إذا تم تحميل البروتين المصاب، يتم جلب السليم المقابل له تلقائياً
+                        if p['prefix'] == 'm':
+                            mdb = load_mutation_db()
+                            if pdb_input in mdb:
+                                h_id = mdb[pdb_input]
+                                st.session_state['h_id_in_val'] = h_id
+                                st.session_state['h_id_widget'] = h_id
+                                h_data = fetch_deposited_pdb(h_id)
+                                if h_data:
+                                    st.session_state["h_pdb"] = h_data
+                                    st.session_state["h_assembly_pdb"] = fetch_biological_assembly(h_id, assembly_id=1)
+                                    st.session_state["h_id"] = h_id
+                                    st.session_state.pop("h_upload_sha256", None)
+                                    reset_protein_state('h')
+                                    st.info(f"✅ تم تحميل البروتين السليم تلقائياً: {h_id}")
+                        deposited_data = fetch_deposited_pdb(pdb_input)
+                        assembly_data = fetch_biological_assembly(pdb_input, assembly_id=1)
+                        if deposited_data:
+                            st.session_state[f"{p['prefix']}_pdb"] = deposited_data
+                            st.session_state[f"{p['prefix']}_assembly_pdb"] = assembly_data
+                            st.session_state[f"{p['prefix']}_id"] = pdb_input
+                            st.session_state.pop(f"{p['prefix']}_upload_sha256", None)
+                            reset_protein_state(p['prefix'])
+                            invalidate_dependent_results(f"{p['label']} coordinates were replaced with PDB ID {pdb_input}.")
+                            st.rerun()
+                        else:
+                            st.error(f"لم يتم العثور على البروتين بالكود: {pdb_input}")
+            with col_btn2:
+                if st.button(f"مسح {p['label']}", key=f"btn_clear_{p['prefix']}", use_container_width=True):
+                    clear_protein(p['prefix'], p['label'])
+                    st.rerun()
         else:
             file = st.file_uploader(f"ارفع ملف {p['label']} (.pdb):", type=["pdb"], key=f"{p['prefix']}_up")
             if file:
-                st.session_state[f"{p['prefix']}_pdb"] = file.getvalue().decode("utf-8")
-                st.session_state[f"{p['prefix']}_assembly_pdb"] = None
-                st.session_state[f"{p['prefix']}_id"] = file.name
-                reset_protein_state(p['prefix'])
+                content_bytes = file.getvalue()
+                new_sha = hashlib.sha256(content_bytes).hexdigest()
+                prev_sha = st.session_state.get(f"{p['prefix']}_upload_sha256")
+                if new_sha != prev_sha:
+                    st.session_state[f"{p['prefix']}_upload_sha256"] = new_sha
+                    st.session_state[f"{p['prefix']}_pdb"] = content_bytes.decode("utf-8", errors="replace")
+                    st.session_state[f"{p['prefix']}_assembly_pdb"] = None
+                    st.session_state[f"{p['prefix']}_id"] = file.name
+                    reset_protein_state(p['prefix'])
+                    invalidate_dependent_results(f"Uploaded file for {p['label']} was changed to '{file.name}'.")
+                    st.rerun()
+
+            if st.button(f"مسح {p['label']}", key=f"btn_clear_up_{p['prefix']}", use_container_width=True):
+                clear_protein(p['prefix'], p['label'])
+                st.rerun()
 
 def render_analysis_tab():
     """عرض تبويب التحليل الهيكلي ومقارنة الطفرات بالكامل."""
+    reason = st.session_state.pop("last_result_invalidation_reason", None)
+    if reason:
+        st.info(
+            f"Previous analysis and docking results were cleared to prevent mixing datasets. "
+            f"{reason} Saved run folders remain available as separate provenance records."
+        )
+
     # ── إعدادات الشريط الجانبي (Sidebar) ──
     st.sidebar.header("⚙️ التحليل والإعدادات")
     with st.sidebar.expander("🎨 خيارات العرض", expanded=True):
-        search_radius = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0, key="analysis_search_radius")
-        view_style = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"], key="analysis_view_style")
-        show_ligands = st.checkbox("💊 إظهار الليجاند (Show Ligand)", value=True, key="analysis_show_ligands")
+        search_radius = st.slider("🔍 نصف قطر البحث (Å)", 3.0, 12.0, 5.0)
+        view_style = st.selectbox("نمط العرض", ["cartoon", "stick", "sphere"])
+        show_ligands = st.checkbox("إظهار الليجاند (Show Ligand)", value=True)
         if show_ligands:
             ligand_style = st.selectbox(
                 "نمط تمثيل الليجاند (Ligand Style):",
                 ["أعواد ملونة مع كرات (Sticks & Spheres)", "أعواد فقط (Sticks Only)", "كرات فضاء (Spheres)"],
-                index=0,
-                key="analysis_ligand_style"
+                index=0
             )
         else:
             ligand_style = "إخفاء"
-        show_surface = st.checkbox("🌐 إظهار السطح (Surface)", value=False, key="analysis_show_surface")
-        if show_surface:
-            surface_type = st.selectbox(
-                "نوع السطح الجزيئي:",
-                ["MS (Molecular Surface)", "SAS (Solvent Accessible)", "VDW (Van der Waals)"],
-                index=0,
-                key="analysis_surface_type"
-            )
-            surface_opacity = st.slider("شفافية السطح", 0.0, 1.0, 0.3, key="analysis_surface_opacity")
-        else:
-            surface_type = "MS"
-            surface_opacity = 0.3
+        show_surface = st.checkbox("إظهار السطح (Surface)", value=False)
+        surface_type = st.selectbox(
+            "نوع السطح الجزيئي:",
+            ["MS (Molecular Surface)", "SAS (Solvent Accessible)", "VDW (Van der Waals)"],
+            index=0
+        )
+        surface_opacity = st.slider("شفافية السطح", 0.0, 1.0, 0.3)
     
     with st.sidebar.expander("🧬 خيارات نمط الإحداثيات والتجمع الحيوي", expanded=True):
         assembly_mode_display = st.radio(

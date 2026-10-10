@@ -20,7 +20,7 @@ def structure_to_pdb_str(structure):
     except Exception:
         return ""
 
-def process_protein_structure(pdb_string: str, pdb_id: str):
+def process_protein_structure(pdb_string: str, pdb_id: str = "protein"):
     """Parse one already-selected coordinate set and calculate residue SASA.
 
     `pdb_string` must be either the deposited coordinates or an official RCSB
@@ -62,9 +62,11 @@ def get_protein_sequence(structure, chain_id):
         if chain_id in [c.id for c in model]:
             for residue in model[chain_id]:
                 if residue.id[0] == ' ':  # التأكد من أنه حمض أميني حقيقي
+                    resname = residue.get_resname()
                     sequence.append({
                         'res_num': residue.id[1],
-                        'res_name': residue.get_resname()
+                        'res_name': resname,
+                        'one_letter': AA_3TO1.get(resname, 'X')
                     })
     except Exception as ex:
         st.error(f"فشل قراءة التسلسل للسلسلة {chain_id}: {ex}")

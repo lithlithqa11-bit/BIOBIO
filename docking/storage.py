@@ -76,6 +76,35 @@ def compute_file_sha256(filepath: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+MANIFEST_STATUSES = {
+    "validation passed",
+    "validation passed (Top-10 recovery)",
+    "validation failed",
+    "validation unavailable",
+    "protocol validated on WT reference",
+    "not validated for affinity comparison",
+    "exploratory—no reference validation",
+    "exploratory—insufficient independent seeds",
+    "exploratory—cross-protein docking",
+    "run failed",
+}
+
+LEGACY_STATUS_ALIASES = {
+    "exploratory": "exploratory—no reference validation",
+}
+
+
+STATUS_MAP = {s.lower(): s for s in MANIFEST_STATUSES}
+STATUS_MAP.update({k.lower(): v for k, v in LEGACY_STATUS_ALIASES.items()})
+
+
+def normalize_manifest_status(status: str) -> str:
+    key = str(status).strip().lower()
+    if key in STATUS_MAP:
+        return STATUS_MAP[key]
+    raise ValueError(f"Unsupported docking manifest status: {status!r}")
+
+
 def build_and_save_manifest(
     run_dir: Path,
     run_id: str,
@@ -92,18 +121,7 @@ def build_and_save_manifest(
 ) -> Path:
     """Build and write the final manifest for a docking run."""
     run_dir = Path(run_dir)
-
-    valid_statuses = [
-        "validation passed",
-        "validation passed (Top-10 recovery)",
-        "validation failed",
-        "validation unavailable",
-        "exploratory—no reference validation",
-        "exploratory—insufficient independent seeds",
-        "run failed"
-    ]
-    if status not in valid_statuses:
-        status = "run failed" if "fail" in status.lower() else "exploratory—no reference validation"
+    status = normalize_manifest_status(status)
 
     created_at_utc = target_meta.get("created_at_utc") or ""
 
