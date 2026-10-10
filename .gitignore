@@ -24,6 +24,7 @@ runs/
 # IDE and temporary agent folders
 .gemini/
 .agents/
+Bio_V2-main/
 
 # Temporary and log files
 *.log
