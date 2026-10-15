@@ -109,15 +109,59 @@ def render_docked_complex_3d(receptor_pdb_path: Path, pose_pdbqt_block: str, ref
     else:
         view.zoomTo()
 
-    # 📦 إظهار صندوق حيز الارتباط ثلاثي الأبعاد (3D Grid Box Visualizer)
+    # 📦 إظهار صندوق حيز الارتباط ثلاثي الأبعاد بصورة مضلعة واضحة الحواف (Polygonal Wireframe Grid Box)
     if grid_box and show_grid_box:
         try:
+            cx = float(grid_box.center_x)
+            cy = float(grid_box.center_y)
+            cz = float(grid_box.center_z)
+            wx = float(grid_box.size_x)
+            hy = float(grid_box.size_y)
+            dz = float(grid_box.size_z)
+
+            # 1. أوجه شفافة خفيفة لتجسيم عمق الصندوق دون حجب الجيب
             view.addBox({
-                "center": {"x": float(grid_box.center_x), "y": float(grid_box.center_y), "z": float(grid_box.center_z)},
-                "dimensions": {"w": float(grid_box.size_x), "h": float(grid_box.size_y), "d": float(grid_box.size_z)},
+                "center": {"x": cx, "y": cy, "z": cz},
+                "dimensions": {"w": wx, "h": hy, "d": dz},
                 "color": "#FFD700",
-                "opacity": 0.25
+                "opacity": 0.12
             })
+
+            # 2. شبكة مضلعة ثلاثية الأبعاد (Wireframe Cage)
+            view.addBox({
+                "center": {"x": cx, "y": cy, "z": cz},
+                "dimensions": {"w": wx, "h": hy, "d": dz},
+                "color": "#FFB800",
+                "wireframe": True,
+                "opacity": 0.85
+            })
+
+            # 3. إبراز حواف المكعب الـ 12 المضلعة (12 Boundary Edges)
+            x0, x1 = cx - wx / 2.0, cx + wx / 2.0
+            y0, y1 = cy - hy / 2.0, cy + hy / 2.0
+            z0, z1 = cz - dz / 2.0, cz + dz / 2.0
+
+            corners = [
+                {"x": x0, "y": y0, "z": z0},  # 0
+                {"x": x1, "y": y0, "z": z0},  # 1
+                {"x": x1, "y": y1, "z": z0},  # 2
+                {"x": x0, "y": y1, "z": z0},  # 3
+                {"x": x0, "y": y0, "z": z1},  # 4
+                {"x": x1, "y": y0, "z": z1},  # 5
+                {"x": x1, "y": y1, "z": z1},  # 6
+                {"x": x0, "y": y1, "z": z1},  # 7
+            ]
+            edges = [
+                (0, 1), (1, 2), (2, 3), (3, 0),  # القاعدة السفلية
+                (4, 5), (5, 6), (6, 7), (7, 4),  # القاعدة العلوية
+                (0, 4), (1, 5), (2, 6), (3, 7),  # الأضلاع الجانبية
+            ]
+            for start_idx, end_idx in edges:
+                view.addLine({
+                    "start": corners[start_idx],
+                    "end": corners[end_idx],
+                    "color": "#FF8C00"
+                })
         except Exception:
             pass
 
