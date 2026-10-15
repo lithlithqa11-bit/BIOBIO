@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from io import StringIO
 import numpy as np
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -705,6 +707,44 @@ class TestGenericMatchedDockingScientificReliability(unittest.TestCase):
         self.assertTrue(report["recovery_rmsd_pass"])
         self.assertTrue(report["recovery_cluster_pass"])
         self.assertLess(report["top1"]["rmsd_angstrom"], 2.0)
+
+    def test_6b_chemical_resonance_and_hydrogens_rmsd_accuracy(self):
+        """Verify heavy-atom RMSD handles aromatic resonance, coordinate translations, and PDBQT polar hydrogens."""
+        # 1. Benzene: identical coordinates must yield RMSD == 0.000 despite alternating Kekule representations
+        m_ben = Chem.MolFromSmiles("c1ccccc1")
+        m_ben = Chem.AddHs(m_ben)
+        AllChem.EmbedMolecule(m_ben, randomSeed=42)
+        m_ben = Chem.RemoveHs(m_ben)
+        pdb_ben = Chem.MolToPDBBlock(m_ben)
+        ob_ben = read_text(pdb_ben, "pdb")
+        pdbqt_ben = write_text(ob_ben, "pdbqt")
+
+        rmsd_ben, det_ben = calculate_mapped_redocking_rmsd(pdb_ben, pdbqt_ben)
+        self.assertEqual(rmsd_ben, 0.0)
+        self.assertEqual(det_ben["matched_atom_count"], 6)
+
+        # 2. Known 1.0 A rigid translation along X-axis
+        conf = m_ben.GetConformer()
+        for i in range(m_ben.GetNumAtoms()):
+            p = conf.GetAtomPosition(i)
+            conf.SetAtomPosition(i, (p.x + 1.0, p.y, p.z))
+        pdb_trans = Chem.MolToPDBBlock(m_ben)
+        rmsd_trans, _ = calculate_mapped_redocking_rmsd(pdb_trans, pdbqt_ben)
+        self.assertAlmostEqual(rmsd_trans, 1.0, places=3)
+
+        # 3. Real drug Erlotinib: contains secondary amine (NH) which has polar H in PDBQT
+        erl_smi = "COCCOC1=C(C=C2C(=C1)C(=NC=N2)NC3=CC=CC(=C3)C#C)OCCOC"
+        m_erl = Chem.MolFromSmiles(erl_smi)
+        m_erl = Chem.AddHs(m_erl)
+        AllChem.EmbedMolecule(m_erl, randomSeed=42)
+        m_erl = Chem.RemoveHs(m_erl)
+        pdb_erl = Chem.MolToPDBBlock(m_erl)
+        ob_erl = read_text(pdb_erl, "pdb")
+        pdbqt_erl = write_text(ob_erl, "pdbqt")
+
+        rmsd_erl, det_erl = calculate_mapped_redocking_rmsd(pdb_erl, pdbqt_erl)
+        self.assertEqual(rmsd_erl, 0.0)
+        self.assertEqual(det_erl["matched_atom_count"], 29)
 
     def test_7_empty_matched_fields_block_execution_without_egfr_defaults(self):
         """7. Empty matched fields must block execution; no implicit EGFR, Erlotinib, or residue defaults may be used."""

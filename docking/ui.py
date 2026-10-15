@@ -1691,6 +1691,20 @@ def _render_matched_comparison_ui(vina_ver: str, is_advanced_mode: bool = False)
             if val_reason:
                 st.caption(f"📝 **تفسير حالة التحقق:** {val_reason}")
 
+            redocking_val = comp.get("redocking_validation")
+            if redocking_val and "top1" in redocking_val and "recovery" in redocking_val:
+                t1 = redocking_val["top1"]
+                rec = redocking_val["recovery"]
+                cutoff = redocking_val.get("rmsd_cutoff", 2.0)
+                with st.expander("🔬 تفاصيل التحقق الإحصائي لإعادة إرساء المرجع (WT Redocking RMSD Metrics)"):
+                    st.markdown(
+                        f"- **معيار القبول (RMSD Cutoff):** `<= {cutoff} Å`\n"
+                        f"- **Top-1 Vina pose RMSD:** `{t1['rmsd_angstrom']:.3f} Å` (Score: `{t1['score']} kcal/mol`)\n"
+                        f"- **Best Top-10 recovery RMSD:** `{rec['rmsd_angstrom']:.3f} Å` (Seed `{rec['seed']}`, Rank `{rec['rank']}`, Score: `{rec['score']} kcal/mol`)\n"
+                        f"- **دعم البذور المستقلة للعنقود:** `{rec['cluster_seed_count']}` بذور `{rec['supporting_seeds']}`\n"
+                        f"- **طريقة الحساب:** `{redocking_val.get('method', 'symmetry-aware heavy-atom mapped RMSD (no-fit)')}`"
+                    )
+
             # Protonation assumption note (Section 6)
             st.info(f"ℹ️ {comp.get('protonation_note', PROTONATION_ASSUMPTION_NOTE)}")
 

@@ -57,12 +57,16 @@ def verify_reference_ligand_identity(
 
 
 def parse_pdbqt_coords(pdbqt_block: str) -> np.ndarray:
-    """Extract coordinates of heavy atoms from a PDBQT block."""
+    """Extract coordinates of heavy atoms from a PDBQT block (first model)."""
     coords = []
     for line in pdbqt_block.splitlines():
+        if line.startswith("ENDMDL"):
+            break
         if line.startswith("ATOM") or line.startswith("HETATM"):
             atom_type = line[77:].strip() if len(line) >= 78 else ""
-            if not atom_type.startswith("H"):
+            atom_name = line[12:16].strip() if len(line) >= 16 else ""
+            is_h = atom_type.upper().startswith("H") or (not atom_type and atom_name.upper().startswith("H"))
+            if not is_h:
                 try:
                     x = float(line[30:38])
                     y = float(line[38:46])
@@ -110,6 +114,10 @@ def calculate_mapped_redocking_rmsd(ref_ligand_pdb_text: str, pose_pdbqt_block: 
     if mol_pose is None:
         raise ValueError("Could not parse docked pose coordinates into a chemical molecule.")
 
+    # Strip explicit/polar hydrogens to strictly evaluate heavy-atom RMSD while preserving conformer coordinates
+    mol_ref = Chem.RemoveHs(mol_ref, sanitize=False)
+    mol_pose = Chem.RemoveHs(mol_pose, sanitize=False)
+
     ref_heavy_count = mol_ref.GetNumHeavyAtoms()
     pose_heavy_count = mol_pose.GetNumHeavyAtoms()
 
@@ -119,17 +127,22 @@ def calculate_mapped_redocking_rmsd(ref_ligand_pdb_text: str, pose_pdbqt_block: 
             f"docked ligand has {pose_heavy_count} heavy atoms. Molecules must match exactly."
         )
 
+    if mol_ref.GetNumConformers() == 0 or mol_pose.GetNumConformers() == 0:
+        raise ValueError("Validation unavailable: ligand molecule does not contain 3D conformer coordinates.")
+
     Chem.FastFindRings(mol_ref)
     Chem.FastFindRings(mol_pose)
 
-    # 3. Establish documented atom mapping via chemically strict MCS
+    # 3. Establish documented atom mapping via MCS:
+    # Use CompareAny for bondCompare because PDB and PDBQT lack aromatic bond types, leading to differing
+    # single/double Kekule assignments by OpenBabel and RDKit for identical conjugated/aromatic rings.
     mcs = rdFMCS.FindMCS(
         [mol_ref, mol_pose],
         atomCompare=rdFMCS.AtomCompare.CompareElements,
-        bondCompare=rdFMCS.BondCompare.CompareOrderExact,
+        bondCompare=rdFMCS.BondCompare.CompareAny,
         ringMatchesRingOnly=True,
         completeRingsOnly=True,
-        matchValences=True,
+        timeout=10,
     )
 
     if mcs.numAtoms != ref_heavy_count:

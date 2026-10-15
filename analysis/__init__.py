@@ -19,6 +19,7 @@ from analysis.structure import (
     sequence_to_fasta,
     calculate_all_distances,
     calculate_sasa_map,
+    calculate_structure_rmsd,
 )
 from analysis.alignment import get_alignment, analyze_impact
 from analysis.visualization import render_protein_3d, build_sasa_figure
@@ -36,6 +37,7 @@ __all__ = [
     "sequence_to_fasta",
     "calculate_all_distances",
     "calculate_sasa_map",
+    "calculate_structure_rmsd",
     "get_alignment",
     "analyze_impact",
     "render_protein_3d",

@@ -14,6 +14,7 @@ from analysis.structure import (
     sequence_to_fasta,
     calculate_all_distances,
     calculate_sasa_map,
+    calculate_structure_rmsd,
 )
 from analysis.alignment import get_alignment, analyze_impact
 from analysis.visualization import render_protein_3d, build_sasa_figure
@@ -463,15 +464,28 @@ def render_analysis_tab():
                 st.plotly_chart(sasa_figure, use_container_width=True)
 
             # ── نتيجة المحاذاة (Alignment) ──
-            st.header(f"🧬 المحاذاة التسلسلية (Alignment: {alignment_mode.capitalize()})")
+            st.header(f"🧬 المحاذاة التسلسلية والهيكلية (Alignment: {alignment_mode.capitalize()})")
             aligned_len = len(alignment_data['aligned_healthy'])
             identity_pct = (sum(a == b and a != '-' for a, b in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant'])) / aligned_len * 100) if aligned_len > 0 else 0.0
             mutations_count = sum(a != b and a != '-' and b != '-' for a, b in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant']))
             indels_count = sum(a != b and (a == '-' or b == '-') for a, b in zip(alignment_data['aligned_healthy'], alignment_data['aligned_mutant']))
 
-            score_c1, score_c2, score_c3, score_c4 = st.columns(4)
-            score_c1.metric("درجة المحاذاة (Score)", round(alignment_data['score'], 1))
-            score_c2.metric("نسبة التطابق (Identity)", f"{identity_pct:.1f}%")
-            score_c3.metric("عدد الطفرات (Mutations)", f"{mutations_count}")
-            score_c4.metric("الفجوات والإزاحات (Indels)", f"{indels_count}")
+            ca_rmsd = calculate_structure_rmsd(
+                structures.get('h'), h_chain, structures.get('m'), m_chain, alignment_data
+            )
+
+            if ca_rmsd is not None:
+                score_c1, score_c2, score_c3, score_c4, score_c5 = st.columns(5)
+                score_c1.metric("درجة المحاذاة (Score)", round(alignment_data['score'], 1))
+                score_c2.metric("نسبة التطابق (Identity)", f"{identity_pct:.1f}%")
+                score_c3.metric("عدد الطفرات (Mutations)", f"{mutations_count}")
+                score_c4.metric("الفجوات والإزاحات (Indels)", f"{indels_count}")
+                score_c5.metric("انحراف الهيكل (Cα RMSD)", f"{ca_rmsd:.3f} Å")
+            else:
+                score_c1, score_c2, score_c3, score_c4 = st.columns(4)
+                score_c1.metric("درجة المحاذاة (Score)", round(alignment_data['score'], 1))
+                score_c2.metric("نسبة التطابق (Identity)", f"{identity_pct:.1f}%")
+                score_c3.metric("عدد الطفرات (Mutations)", f"{mutations_count}")
+                score_c4.metric("الفجوات والإزاحات (Indels)", f"{indels_count}")
+
             st.code(alignment_data['text'], language='text')

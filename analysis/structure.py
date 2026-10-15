@@ -154,3 +154,53 @@ def calculate_sasa_map(structure, chain_id):
         return sasa_map
     except Exception:
         return {}
+
+
+def calculate_structure_rmsd(structure1, chain1: str, structure2, chain2: str, alignment_data: dict) -> float | None:
+    """Calculate backbone C-alpha RMSD between two aligned protein structures using Kabsch superposition."""
+    if not structure1 or not structure2 or not alignment_data:
+        return None
+    try:
+        from Bio.PDB import Superimposer
+        ca_h = []
+        ca_m = []
+        idx_h = 0
+        idx_m = 0
+        seq_h = alignment_data.get('healthy_seq', [])
+        seq_m = alignment_data.get('mutant_seq', [])
+        aln_h = alignment_data.get('aligned_healthy', '')
+        aln_m = alignment_data.get('aligned_mutant', '')
+
+        m1 = structure1[0]
+        m2 = structure2[0]
+        if chain1 not in m1 or chain2 not in m2:
+            return None
+
+        c1 = m1[chain1]
+        c2 = m2[chain2]
+
+        res_dict1 = {r.id[1]: r for r in c1 if r.id[0] == ' '}
+        res_dict2 = {r.id[1]: r for r in c2 if r.id[0] == ' '}
+
+        for ch_h, ch_m in zip(aln_h, aln_m):
+            r_h = seq_h[idx_h] if ch_h != '-' and idx_h < len(seq_h) else None
+            r_m = seq_m[idx_m] if ch_m != '-' and idx_m < len(seq_m) else None
+            if ch_h != '-':
+                idx_h += 1
+            if ch_m != '-':
+                idx_m += 1
+            if r_h and r_m:
+                res1 = res_dict1.get(r_h['res_num'])
+                res2 = res_dict2.get(r_m['res_num'])
+                if res1 and res2 and 'CA' in res1 and 'CA' in res2:
+                    ca_h.append(res1['CA'])
+                    ca_m.append(res2['CA'])
+
+        if len(ca_h) >= 3:
+            sup = Superimposer()
+            sup.set_atoms(ca_h, ca_m)
+            return round(float(sup.rms), 3)
+        return None
+    except Exception:
+        return None
+
